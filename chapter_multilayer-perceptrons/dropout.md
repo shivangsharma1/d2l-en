@@ -1,80 +1,13 @@
+```{.python .input}
+%load_ext d2lbook.tab
+tab.interact_select(['mxnet', 'pytorch', 'tensorflow', 'jax'])
+```
+
 # Dropout
 :label:`sec_dropout`
 
-In :numref:`sec_weight_decay`,
-we introduced the classical approach
-to regularizing statistical models
-by penalizing the $L_2$ norm of the weights.
-In probabilistic terms, we could justify this technique
-by arguing that we have assumed a prior belief
-that weights take values from
-a Gaussian distribution with mean zero.
-More intuitively, we might argue
-that we encouraged the model to spread out its weights
-among many features rather than depending too much
-on a small number of potentially spurious associations.
 
-## Overfitting Revisited
-
-Faced with more features than examples,
-linear models tend to overfit.
-But given more examples than features,
-we can generally count on linear models not to overfit.
-Unfortunately, the reliability with which
-linear models generalize comes at a cost.
-Naively applied, linear models do not take
-into account interactions among features.
-For every feature, a linear model must assign
-either a positive or a negative weight, ignoring context.
-
-In traditional texts, this fundamental tension
-between generalizability and flexibility
-is described as the *bias-variance tradeoff*.
-Linear models have high bias: they can only represent a small class of functions.
-However, these models have low variance: they give similar results
-across different random samples of the data.
-
-Deep neural networks inhabit the opposite
-end of the bias-variance spectrum.
-Unlike linear models, neural networks
-are not confined to looking at each feature individually.
-They can learn interactions among groups of features.
-For example, they might infer that
-“Nigeria” and “Western Union” appearing
-together in an email indicates spam
-but that separately they do not.
-
-Even when we have far more examples than features,
-deep neural networks are capable of overfitting.
-In 2017, a group of researchers demonstrated
-the extreme flexibility of neural networks
-by training deep nets on randomly-labeled images.
-Despite the absence of any true pattern
-linking the inputs to the outputs,
-they found that the neural network optimized by stochastic gradient descent
-could label every image in the training set perfectly.
-Consider what this means.
-If the labels are assigned uniformly
-at random and there are 10 classes,
-then no classifier can do better
-than 10% accuracy on holdout data.
-The generalization gap here is a whopping 90%.
-If our models are so expressive that they
-can overfit this badly, then when should
-we expect them not to overfit?
-
-The mathematical foundations for
-the puzzling generalization properties
-of deep networks remain open research questions,
-and we encourage the theoretically-oriented
-reader to dig deeper into the topic.
-For now, we turn to the investigation of
-practical tools that tend to
-empirically improve the generalization of deep nets.
-
-## Robustness through Perturbations
-
-Let us think briefly about what we
+Let's think briefly about what we
 expect from a good predictive model.
 We want it to peform well on unseen data.
 Classical generalization theory
@@ -85,9 +18,9 @@ Simplicity can come in the form
 of a small number of dimensions.
 We explored this when discussing the
 monomial basis functions of linear models
-in :numref:`sec_model_selection`.
+in :numref:`sec_generalization_basics`.
 Additionally, as we saw when discussing weight decay
-($L_2$ regularization) in :numref:`sec_weight_decay`,
+($\ell_2$ regularization) in :numref:`sec_weight_decay`,
 the (inverse) norm of the parameters also
 represents a useful measure of simplicity.
 Another useful notion of simplicity is smoothness,
@@ -97,24 +30,17 @@ For instance, when we classify images,
 we would expect that adding some random noise
 to the pixels should be mostly harmless.
 
-In 1995, Christopher Bishop formalized
+:citet:`Bishop.1995` formalized
 this idea when he proved that training with input noise
-is equivalent to Tikhonov regularization :cite:`Bishop.1995`.
+is equivalent to Tikhonov regularization.
 This work drew a clear mathematical connection
 between the requirement that a function be smooth (and thus simple),
 and the requirement that it be resilient
 to perturbations in the input.
 
-Then, in 2014, Srivastava et al. :cite:`Srivastava.Hinton.Krizhevsky.ea.2014`
+Then, :citet:`Srivastava.Hinton.Krizhevsky.ea.2014`
 developed a clever idea for how to apply Bishop's idea
 to the internal layers of a network, too.
-Namely, they proposed to inject noise
-into each layer of the network
-before calculating the subsequent layer during training.
-They realized that when training
-a deep network with many layers,
-injecting noise enforces smoothness just on the input-output mapping.
-
 Their idea, called *dropout*, involves
 injecting noise while computing
 each internal layer during forward propagation,
@@ -134,18 +60,22 @@ offers intuition through a surprising
 analogy to sexual reproduction.
 The authors argue that neural network overfitting
 is characterized by a state in which
-each layer relies on a specifc
+each layer relies on a specific
 pattern of activations in the previous layer,
 calling this condition *co-adaptation*.
 Dropout, they claim, breaks up co-adaptation
 just as sexual reproduction is argued to
 break up co-adapted genes.
+While such an justification of this theory is certainly up for debate,
+the dropout technique itself has proved enduring,
+and various forms of dropout are implemented
+in most deep learning libraries. 
 
-The key challenge then is how to inject this noise.
-One idea is to inject the noise in an *unbiased* manner
+
+The key challenge is how to inject this noise.
+One idea is to inject it in an *unbiased* manner
 so that the expected value of each layer---while fixing
-the others---equals to the value it would have taken absent noise.
-
+the others---equals the value it would have taken absent noise.
 In Bishop's work, he added Gaussian noise
 to the inputs to a linear model.
 At each training iteration, he added noise
@@ -155,7 +85,8 @@ yielding a perturbed point $\mathbf{x}' = \mathbf{x} + \epsilon$.
 In expectation, $E[\mathbf{x}'] = \mathbf{x}$.
 
 In standard dropout regularization,
-one debiases each layer by normalizing
+one zeros out some fraction of the nodes in each layer
+and then *debiases* each layer by normalizing
 by the fraction of nodes that were retained (not dropped out).
 In other words,
 with *dropout probability* $p$,
@@ -166,18 +97,49 @@ $$
 \begin{aligned}
 h' =
 \begin{cases}
-    0 & \text{ with probability } p \\
-    \frac{h}{1-p} & \text{ otherwise}
+    0 & \textrm{ with probability } p \\
+    \frac{h}{1-p} & \textrm{ otherwise}
 \end{cases}
 \end{aligned}
 $$
 
 By design, the expectation remains unchanged, i.e., $E[h'] = h$.
 
+```{.python .input}
+%%tab mxnet
+from d2l import mxnet as d2l
+from mxnet import autograd, gluon, init, np, npx
+from mxnet.gluon import nn
+npx.set_np()
+```
+
+```{.python .input}
+%%tab pytorch
+from d2l import torch as d2l
+import torch
+from torch import nn
+```
+
+```{.python .input}
+%%tab tensorflow
+from d2l import tensorflow as d2l
+import tensorflow as tf
+```
+
+```{.python .input}
+%%tab jax
+from d2l import jax as d2l
+from flax import linen as nn
+from functools import partial
+import jax
+from jax import numpy as jnp
+import optax
+```
+
 ## Dropout in Practice
 
-Recall the MLP with a hidden layer and 5 hidden units
-in :numref:`fig_mlp`.
+Recall the MLP with a hidden layer and five hidden units
+from :numref:`fig_mlp`.
 When we apply dropout to a hidden layer,
 zeroing out each hidden unit with probability $p$,
 the result can be viewed as a network
@@ -201,7 +163,7 @@ and thus do not need to normalize.
 However, there are some exceptions:
 some researchers use dropout at test time as a heuristic
 for estimating the *uncertainty* of neural network predictions:
-if the predictions agree across many different dropout masks,
+if the predictions agree across many different dropout outputs,
 then we might say that the network is more confident.
 
 ## Implementation from Scratch
@@ -217,126 +179,67 @@ from the uniform distribution $U[0, 1]$.
 Then we can keep those nodes for which the corresponding
 sample is greater than $p$, dropping the rest.
 
-In the following code, we implement a `dropout_layer` function
+In the following code, we (**implement a `dropout_layer` function
 that drops out the elements in the tensor input `X`
-with probability `dropout`,
+with probability `dropout`**),
 rescaling the remainder as described above:
 dividing the survivors by `1.0-dropout`.
 
 ```{.python .input}
-from d2l import mxnet as d2l
-from mxnet import autograd, gluon, init, np, npx
-from mxnet.gluon import nn
-npx.set_np()
-
+%%tab mxnet
 def dropout_layer(X, dropout):
     assert 0 <= dropout <= 1
-    # In this case, all elements are dropped out
-    if dropout == 1:
-        return np.zeros_like(X)
-    # In this case, all elements are kept
-    if dropout == 0:
-        return X
+    if dropout == 1: return np.zeros_like(X)
     mask = np.random.uniform(0, 1, X.shape) > dropout
     return mask.astype(np.float32) * X / (1.0 - dropout)
 ```
 
 ```{.python .input}
-#@tab pytorch
-from d2l import torch as d2l
-import torch
-from torch import nn
-
+%%tab pytorch
 def dropout_layer(X, dropout):
     assert 0 <= dropout <= 1
-    # In this case, all elements are dropped out
-    if dropout == 1:
-        return torch.zeros_like(X)
-    # In this case, all elements are kept
-    if dropout == 0:
-        return X
-    mask = (torch.Tensor(X.shape).uniform_(0, 1) > dropout).float()
+    if dropout == 1: return torch.zeros_like(X)
+    mask = (torch.rand(X.shape) > dropout).float()
     return mask * X / (1.0 - dropout)
 ```
 
 ```{.python .input}
-#@tab tensorflow
-from d2l import tensorflow as d2l
-import tensorflow as tf
-
+%%tab tensorflow
 def dropout_layer(X, dropout):
     assert 0 <= dropout <= 1
-    # In this case, all elements are dropped out
-    if dropout == 1:
-        return tf.zeros_like(X)
-    # In this case, all elements are kept
-    if dropout == 0:
-        return X
+    if dropout == 1: return tf.zeros_like(X)
     mask = tf.random.uniform(
         shape=tf.shape(X), minval=0, maxval=1) < 1 - dropout
     return tf.cast(mask, dtype=tf.float32) * X / (1.0 - dropout)
 ```
 
-We can test out the `dropout_layer` function on a few examples.
+```{.python .input}
+%%tab jax
+def dropout_layer(X, dropout, key=d2l.get_key()):
+    assert 0 <= dropout <= 1
+    if dropout == 1: return jnp.zeros_like(X)
+    mask = jax.random.uniform(key, X.shape) > dropout
+    return jnp.asarray(mask, dtype=jnp.float32) * X / (1.0 - dropout)
+```
+
+We can [**test out the `dropout_layer` function on a few examples**].
 In the following lines of code,
 we pass our input `X` through the dropout operation,
 with probabilities 0, 0.5, and 1, respectively.
 
 ```{.python .input}
-X = np.arange(16).reshape(2, 8)
-print(dropout_layer(X, 0))
-print(dropout_layer(X, 0.5))
-print(dropout_layer(X, 1))
-```
-
-```{.python .input}
-#@tab pytorch
-X= torch.arange(16, dtype = torch.float32).reshape((2, 8))
-print(X)
-print(dropout_layer(X, 0.))
-print(dropout_layer(X, 0.5))
-print(dropout_layer(X, 1.))
-```
-
-```{.python .input}
-#@tab tensorflow
-X = tf.reshape(tf.range(16, dtype=tf.float32), (2, 8))
-print(X)
-print(dropout_layer(X, 0.))
-print(dropout_layer(X, 0.5))
-print(dropout_layer(X, 1.))
-```
-
-### Defining Model Parameters
-
-Again, we work with the Fashion-MNIST dataset
-introduced in :numref:`sec_fashion_mnist`.
-We define an MLP with
-two hidden layers containing 256 units each.
-
-```{.python .input}
-num_inputs, num_outputs, num_hiddens1, num_hiddens2 = 784, 10, 256, 256
-
-W1 = np.random.normal(scale=0.01, size=(num_inputs, num_hiddens1))
-b1 = np.zeros(num_hiddens1)
-W2 = np.random.normal(scale=0.01, size=(num_hiddens1, num_hiddens2))
-b2 = np.zeros(num_hiddens2)
-W3 = np.random.normal(scale=0.01, size=(num_hiddens2, num_outputs))
-b3 = np.zeros(num_outputs)
-
-params = [W1, b1, W2, b2, W3, b3]
-for param in params:
-    param.attach_grad()
-```
-
-```{.python .input}
-#@tab pytorch
-num_inputs, num_outputs, num_hiddens1, num_hiddens2 = 784, 10, 256, 256
-```
-
-```{.python .input}
-#@tab tensorflow
-num_outputs, num_hiddens1, num_hiddens2 = 10, 256, 256
+%%tab all
+if tab.selected('mxnet'):
+    X = np.arange(16).reshape(2, 8)
+if tab.selected('pytorch'):
+    X = torch.arange(16, dtype = torch.float32).reshape((2, 8))
+if tab.selected('tensorflow'):
+    X = tf.reshape(tf.range(16, dtype=tf.float32), (2, 8))
+if tab.selected('jax'):
+    X = jnp.arange(16, dtype=jnp.float32).reshape(2, 8)
+print('dropout_p = 0:', dropout_layer(X, 0))
+print('dropout_p = 0.5:', dropout_layer(X, 0.5))
+print('dropout_p = 1:', dropout_layer(X, 1))
 ```
 
 ### Defining the Model
@@ -344,124 +247,120 @@ num_outputs, num_hiddens1, num_hiddens2 = 10, 256, 256
 The model below applies dropout to the output
 of each hidden layer (following the activation function).
 We can set dropout probabilities for each layer separately.
-A common trend is to set
+A common choice is to set
 a lower dropout probability closer to the input layer.
-Below we set it to 0.2 and 0.5 for the first
-and second hidden layers, respectively.
 We ensure that dropout is only active during training.
 
 ```{.python .input}
-dropout1, dropout2 = 0.2, 0.5
+%%tab mxnet
+class DropoutMLPScratch(d2l.Classifier):
+    def __init__(self, num_outputs, num_hiddens_1, num_hiddens_2,
+                 dropout_1, dropout_2, lr):
+        super().__init__()
+        self.save_hyperparameters()
+        self.lin1 = nn.Dense(num_hiddens_1, activation='relu')
+        self.lin2 = nn.Dense(num_hiddens_2, activation='relu')
+        self.lin3 = nn.Dense(num_outputs)
+        self.initialize()
 
-def net(X):
-    X = X.reshape(-1, num_inputs)
-    H1 = npx.relu(np.dot(X, W1) + b1)
-    # Use dropout only when training the model
-    if autograd.is_training():
-        # Add a dropout layer after the first fully connected layer
-        H1 = dropout_layer(H1, dropout1)
-    H2 = npx.relu(np.dot(H1, W2) + b2)
-    if autograd.is_training():
-        # Add a dropout layer after the second fully connected layer
-        H2 = dropout_layer(H2, dropout2)
-    return np.dot(H2, W3) + b3
+    def forward(self, X):
+        H1 = self.lin1(X)
+        if autograd.is_training():
+            H1 = dropout_layer(H1, self.dropout_1)
+        H2 = self.lin2(H1)
+        if autograd.is_training():
+            H2 = dropout_layer(H2, self.dropout_2)
+        return self.lin3(H2)
 ```
 
 ```{.python .input}
-#@tab pytorch
-dropout1, dropout2 = 0.2, 0.5
-
-class Net(nn.Module):
-    def __init__(self, num_inputs, num_outputs, num_hiddens1, num_hiddens2,
-                 is_training = True):
-        super(Net, self).__init__()
-
-        self.num_inputs = num_inputs
-        self.training = is_training
-
-        self.lin1 = nn.Linear(num_inputs, num_hiddens1)
-        self.lin2 = nn.Linear(num_hiddens1, num_hiddens2)
-        self.lin3 = nn.Linear(num_hiddens2, num_outputs)
-
+%%tab pytorch
+class DropoutMLPScratch(d2l.Classifier):
+    def __init__(self, num_outputs, num_hiddens_1, num_hiddens_2,
+                 dropout_1, dropout_2, lr):
+        super().__init__()
+        self.save_hyperparameters()
+        self.lin1 = nn.LazyLinear(num_hiddens_1)
+        self.lin2 = nn.LazyLinear(num_hiddens_2)
+        self.lin3 = nn.LazyLinear(num_outputs)
         self.relu = nn.ReLU()
 
     def forward(self, X):
-        H1 = self.relu(self.lin1(X.reshape((-1, self.num_inputs))))
-        # Use dropout only when training the model
-        if self.training == True:
-            # Add a dropout layer after the first fully connected layer
-            H1 = dropout_layer(H1, dropout1)
+        H1 = self.relu(self.lin1(X.reshape((X.shape[0], -1))))
+        if self.training:  
+            H1 = dropout_layer(H1, self.dropout_1)
         H2 = self.relu(self.lin2(H1))
-        if self.training == True:
-            # Add a dropout layer after the second fully connected layer
-            H2 = dropout_layer(H2, dropout2)
-        out = self.lin3(H2)
-        return out
-
-
-net = Net(num_inputs, num_outputs, num_hiddens1, num_hiddens2)
+        if self.training:
+            H2 = dropout_layer(H2, self.dropout_2)
+        return self.lin3(H2)
 ```
 
 ```{.python .input}
-#@tab tensorflow
-dropout1, dropout2 = 0.2, 0.5
-
-class Net(tf.keras.Model):
-    def __init__(self, num_outputs, num_hiddens1, num_hiddens2):
+%%tab tensorflow
+class DropoutMLPScratch(d2l.Classifier):
+    def __init__(self, num_outputs, num_hiddens_1, num_hiddens_2,
+                 dropout_1, dropout_2, lr):
         super().__init__()
-        self.input_layer = tf.keras.layers.Flatten()
-        self.hidden1 = tf.keras.layers.Dense(num_hiddens1, activation='relu')
-        self.hidden2 = tf.keras.layers.Dense(num_hiddens2, activation='relu')
-        self.output_layer = tf.keras.layers.Dense(num_outputs)
+        self.save_hyperparameters()
+        self.lin1 = tf.keras.layers.Dense(num_hiddens_1, activation='relu')
+        self.lin2 = tf.keras.layers.Dense(num_hiddens_2, activation='relu')
+        self.lin3 = tf.keras.layers.Dense(num_outputs)
 
-    def call(self, inputs, training=None):
-        x = self.input_layer(inputs)
-        x = self.hidden1(x)
-        if training:
-            x = dropout_layer(x, dropout1)
-        x = self.hidden2(x)
-        if training:
-            x = dropout_layer(x, dropout2)
-        x = self.output_layer(x)
-        return x
-
-net = Net(num_outputs, num_hiddens1, num_hiddens2)
-```
-
-### Training and Testing
-
-This is similar to the training and testing of MLPs described previously.
-
-```{.python .input}
-num_epochs, lr, batch_size = 10, 0.5, 256
-loss = gluon.loss.SoftmaxCrossEntropyLoss()
-train_iter, test_iter = d2l.load_data_fashion_mnist(batch_size)
-d2l.train_ch3(net, train_iter, test_iter, loss, num_epochs,
-              lambda batch_size: d2l.sgd(params, lr, batch_size))
+    def forward(self, X):
+        H1 = self.lin1(tf.reshape(X, (X.shape[0], -1)))
+        if self.training:
+            H1 = dropout_layer(H1, self.dropout_1)
+        H2 = self.lin2(H1)
+        if self.training:
+            H2 = dropout_layer(H2, self.dropout_2)
+        return self.lin3(H2)
 ```
 
 ```{.python .input}
-#@tab pytorch
-num_epochs, lr, batch_size = 10, 0.5, 256
-loss = nn.CrossEntropyLoss()
-train_iter, test_iter = d2l.load_data_fashion_mnist(batch_size)
-trainer = torch.optim.SGD(net.parameters(), lr=lr)
-d2l.train_ch3(net, train_iter, test_iter, loss, num_epochs, trainer)
+%%tab jax
+class DropoutMLPScratch(d2l.Classifier):
+    num_hiddens_1: int
+    num_hiddens_2: int
+    num_outputs: int
+    dropout_1: float
+    dropout_2: float
+    lr: float
+    training: bool = True
+
+    def setup(self):
+        self.lin1 = nn.Dense(self.num_hiddens_1)
+        self.lin2 = nn.Dense(self.num_hiddens_2)
+        self.lin3 = nn.Dense(self.num_outputs)
+        self.relu = nn.relu
+
+    def forward(self, X):
+        H1 = self.relu(self.lin1(X.reshape(X.shape[0], -1)))
+        if self.training:
+            H1 = dropout_layer(H1, self.dropout_1)
+        H2 = self.relu(self.lin2(H1))
+        if self.training:
+            H2 = dropout_layer(H2, self.dropout_2)
+        return self.lin3(H2)
 ```
+
+### [**Training**]
+
+The following is similar to the training of MLPs described previously.
 
 ```{.python .input}
-#@tab tensorflow
-num_epochs, lr, batch_size = 10, 0.5, 256
-loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-train_iter, test_iter = d2l.load_data_fashion_mnist(batch_size)
-trainer = tf.keras.optimizers.SGD(learning_rate=lr)
-d2l.train_ch3(net, train_iter, test_iter, loss, num_epochs, trainer)
+%%tab all
+hparams = {'num_outputs':10, 'num_hiddens_1':256, 'num_hiddens_2':256,
+           'dropout_1':0.5, 'dropout_2':0.5, 'lr':0.1}
+model = DropoutMLPScratch(**hparams)
+data = d2l.FashionMNIST(batch_size=256)
+trainer = d2l.Trainer(max_epochs=10)
+trainer.fit(model, data)
 ```
 
-## Concise Implementation
+## [**Concise Implementation**]
 
 With high-level APIs, all we need to do is add a `Dropout` layer
-after each fully-connected layer,
+after each fully connected layer,
 passing in the dropout probability
 as the only argument to its constructor.
 During training, the `Dropout` layer will randomly
@@ -472,75 +371,115 @@ When not in training mode,
 the `Dropout` layer simply passes the data through during testing.
 
 ```{.python .input}
-net = nn.Sequential()
-net.add(nn.Dense(256, activation="relu"),
-        # Add a dropout layer after the first fully connected layer
-        nn.Dropout(dropout1),
-        nn.Dense(256, activation="relu"),
-        # Add a dropout layer after the second fully connected layer
-        nn.Dropout(dropout2),
-        nn.Dense(10))
-net.initialize(init.Normal(sigma=0.01))
+%%tab mxnet
+class DropoutMLP(d2l.Classifier):
+    def __init__(self, num_outputs, num_hiddens_1, num_hiddens_2,
+                 dropout_1, dropout_2, lr):
+        super().__init__()
+        self.save_hyperparameters()
+        self.net = nn.Sequential()
+        self.net.add(nn.Dense(num_hiddens_1, activation="relu"),
+                     nn.Dropout(dropout_1),
+                     nn.Dense(num_hiddens_2, activation="relu"),
+                     nn.Dropout(dropout_2),
+                     nn.Dense(num_outputs))
+        self.net.initialize()
 ```
 
 ```{.python .input}
-#@tab pytorch
-net = nn.Sequential(nn.Flatten(),
-        nn.Linear(784, 256),
-        nn.ReLU(),
-        # Add a dropout layer after the first fully connected layer
-        nn.Dropout(dropout1),
-        nn.Linear(256, 256),
-        nn.ReLU(),
-        # Add a dropout layer after the second fully connected layer
-        nn.Dropout(dropout2),
-        nn.Linear(256, 10))
-
-def init_weights(m):
-    if type(m) == nn.Linear:
-        torch.nn.init.normal_(m.weight, std=0.01)
-
-net.apply(init_weights)
+%%tab pytorch
+class DropoutMLP(d2l.Classifier):
+    def __init__(self, num_outputs, num_hiddens_1, num_hiddens_2,
+                 dropout_1, dropout_2, lr):
+        super().__init__()
+        self.save_hyperparameters()
+        self.net = nn.Sequential(
+            nn.Flatten(), nn.LazyLinear(num_hiddens_1), nn.ReLU(), 
+            nn.Dropout(dropout_1), nn.LazyLinear(num_hiddens_2), nn.ReLU(), 
+            nn.Dropout(dropout_2), nn.LazyLinear(num_outputs))
 ```
 
 ```{.python .input}
-#@tab tensorflow
-net = tf.keras.models.Sequential([
-    tf.keras.layers.Flatten(),
-    tf.keras.layers.Dense(256, activation=tf.nn.relu),
-    # Add a dropout layer after the first fully connected layer
-    tf.keras.layers.Dropout(dropout1),
-    tf.keras.layers.Dense(256, activation=tf.nn.relu),
-    # Add a dropout layer after the second fully connected layer
-    tf.keras.layers.Dropout(dropout2),
-    tf.keras.layers.Dense(10),
-])
-```
-
-Next, we train and test the model.
-
-```{.python .input}
-trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': lr})
-d2l.train_ch3(net, train_iter, test_iter, loss, num_epochs, trainer)
+%%tab tensorflow
+class DropoutMLP(d2l.Classifier):
+    def __init__(self, num_outputs, num_hiddens_1, num_hiddens_2,
+                 dropout_1, dropout_2, lr):
+        super().__init__()
+        self.save_hyperparameters()
+        self.net = tf.keras.models.Sequential([
+            tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(num_hiddens_1, activation=tf.nn.relu),
+            tf.keras.layers.Dropout(dropout_1),
+            tf.keras.layers.Dense(num_hiddens_2, activation=tf.nn.relu),
+            tf.keras.layers.Dropout(dropout_2),
+            tf.keras.layers.Dense(num_outputs)])
 ```
 
 ```{.python .input}
-#@tab pytorch
-trainer = torch.optim.SGD(net.parameters(), lr=lr)
-d2l.train_ch3(net, train_iter, test_iter, loss, num_epochs, trainer)
+%%tab jax
+class DropoutMLP(d2l.Classifier):
+    num_hiddens_1: int
+    num_hiddens_2: int
+    num_outputs: int
+    dropout_1: float
+    dropout_2: float
+    lr: float
+    training: bool = True
+
+    @nn.compact
+    def __call__(self, X):
+        x = nn.relu(nn.Dense(self.num_hiddens_1)(X.reshape((X.shape[0], -1))))
+        x = nn.Dropout(self.dropout_1, deterministic=not self.training)(x)
+        x = nn.relu(nn.Dense(self.num_hiddens_2)(x))
+        x = nn.Dropout(self.dropout_2, deterministic=not self.training)(x)
+        return nn.Dense(self.num_outputs)(x)
 ```
 
+:begin_tab:`jax`
+Note that we need to redefine the loss function since a network
+with a dropout layer needs a PRNGKey when using `Module.apply()`,
+and this RNG seed should be explicitly named `dropout`. This key is
+used by the `dropout` layer in Flax to generate the random dropout
+mask internally. It is important to use a unique `dropout_rng` key
+with every epoch in the training loop, otherwise the generated dropout
+mask will not be stochastic and different between the epoch runs.
+This `dropout_rng` can be stored in the
+`TrainState` object (in the `d2l.Trainer` class defined in
+:numref:`oo-design-training`) as an attribute and with every epoch
+it is replaced with a new `dropout_rng`. We already handled this with the
+`fit_epoch` method defined in :numref:`sec_linear_scratch`.
+:end_tab:
+
 ```{.python .input}
-#@tab tensorflow
-trainer = tf.keras.optimizers.SGD(learning_rate=lr)
-d2l.train_ch3(net, train_iter, test_iter, loss, num_epochs, trainer)
+%%tab jax
+@d2l.add_to_class(d2l.Classifier)  #@save
+@partial(jax.jit, static_argnums=(0, 5))
+def loss(self, params, X, Y, state, averaged=True):
+    Y_hat = state.apply_fn({'params': params}, *X,
+                           mutable=False,  # To be used later (e.g., batch norm)
+                           rngs={'dropout': state.dropout_rng})
+    Y_hat = d2l.reshape(Y_hat, (-1, Y_hat.shape[-1]))
+    Y = d2l.reshape(Y, (-1,))
+    fn = optax.softmax_cross_entropy_with_integer_labels
+    # The returned empty dictionary is a placeholder for auxiliary data,
+    # which will be used later (e.g., for batch norm)
+    return (fn(Y_hat, Y).mean(), {}) if averaged else (fn(Y_hat, Y), {})
+```
+
+Next, we [**train the model**].
+
+```{.python .input}
+%%tab all
+model = DropoutMLP(**hparams)
+trainer.fit(model, data)
 ```
 
 ## Summary
 
-* Beyond controlling the number of dimensions and the size of the weight vector, dropout is yet another tool to avoid overfitting. Often they are used jointly.
-* Dropout replaces an activation $h$ with a random variable with expected value $h$.
-* Dropout is only used during training.
+Beyond controlling the number of dimensions and the size of the weight vector, dropout is yet another tool for avoiding overfitting. Often tools are used jointly.
+Note that dropout is
+used only during training:
+it replaces an activation $h$ with a random variable with expected value $h$.
 
 
 ## Exercises
@@ -563,4 +502,8 @@ d2l.train_ch3(net, train_iter, test_iter, loss, num_epochs, trainer)
 
 :begin_tab:`tensorflow`
 [Discussions](https://discuss.d2l.ai/t/261)
+:end_tab:
+
+:begin_tab:`jax`
+[Discussions](https://discuss.d2l.ai/t/17987)
 :end_tab:

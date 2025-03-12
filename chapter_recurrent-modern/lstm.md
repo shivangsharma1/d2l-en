@@ -1,273 +1,559 @@
-# Long Short Term Memory (LSTM)
+# Long Short-Term Memory (LSTM)
 :label:`sec_lstm`
 
-The challenge to address long-term information preservation and short-term input
-skipping in latent variable models has existed for a long time. One of the
-earliest approaches to address this was the LSTM
-:cite:`Hochreiter.Schmidhuber.1997`.  It shares many of the properties of the
-Gated Recurrent Unit (GRU). Interestingly, LSTM's design is slightly more complex than GRU but predates GRU by almost two decades.
 
-Arguably it is inspired by logic gates of a computer. To control a memory cell
-we need a number of gates. One gate is needed to read out the entries from the
-cell (as opposed to reading any other cell). We will refer to this as the
-*output* gate. A second gate is needed to decide when to read data into the
-cell. We refer to this as the *input* gate. Last, we need a mechanism to reset
-the contents of the cell, governed by a *forget* gate. The motivation for such a
-design is the same as before, namely to be able to decide when to remember and
-when to ignore inputs in the latent state via a dedicated mechanism. Let us see
-how this works in practice.
+Shortly after the first Elman-style RNNs were trained using backpropagation 
+:cite:`elman1990finding`, the problems of learning long-term dependencies
+(owing to vanishing and exploding gradients)
+became salient, with Bengio and Hochreiter 
+discussing the problem
+:cite:`bengio1994learning,Hochreiter.Bengio.Frasconi.ea.2001`.
+Hochreiter had articulated this problem as early 
+as 1991 in his Master's thesis, although the results 
+were not widely known because the thesis was written in German.
+While gradient clipping helps with exploding gradients, 
+handling vanishing gradients appears 
+to require a more elaborate solution. 
+One of the first and most successful techniques 
+for addressing vanishing gradients 
+came in the form of the long short-term memory (LSTM) model 
+due to :citet:`Hochreiter.Schmidhuber.1997`. 
+LSTMs resemble standard recurrent neural networks 
+but here each ordinary recurrent node
+is replaced by a *memory cell*.
+Each memory cell contains an *internal state*,
+i.e., a node with a self-connected recurrent edge of fixed weight 1,
+ensuring that the gradient can pass across many time steps 
+without vanishing or exploding.
 
-## Gated Memory Cells
+The term "long short-term memory" comes from the following intuition.
+Simple recurrent neural networks 
+have *long-term memory* in the form of weights.
+The weights change slowly during training, 
+encoding general knowledge about the data.
+They also have *short-term memory*
+in the form of ephemeral activations,
+which pass from each node to successive nodes.
+The LSTM model introduces an intermediate type of storage via the memory cell.
+A memory cell is a composite unit, 
+built from simpler nodes 
+in a specific connectivity pattern,
+with the novel inclusion of multiplicative nodes.
 
-Three gates are introduced in LSTMs: the input gate, the forget gate, and the output gate. In addition to that we will introduce the memory cell that has the same shape as the hidden state. Strictly speaking this is just a fancy version of a hidden state, engineered to record additional information.
+```{.python .input}
+%load_ext d2lbook.tab
+tab.interact_select(['mxnet', 'pytorch', 'tensorflow', 'jax'])
+```
 
-### Input Gates, Forget Gates, and Output Gates
+```{.python .input}
+%%tab mxnet
+from d2l import mxnet as d2l
+from mxnet import np, npx
+from mxnet.gluon import rnn
+npx.set_np()
+```
 
-Just like with GRUs, the data feeding into the LSTM gates is the input at the current time step $\mathbf{X}_t$ and the hidden state of the previous time step $\mathbf{H}_{t-1}$. These inputs are processed by a fully connected layer and a sigmoid activation function to compute the values of input, forget and output gates. As a result, the three gates' all output values are in the range of $[0, 1]$. :numref:`lstm_0` illustrates the data flow for the input, forget, and output gates.
+```{.python .input}
+%%tab pytorch
+from d2l import torch as d2l
+import torch
+from torch import nn
+```
 
-![Calculation of input, forget, and output gates in an LSTM. ](../img/lstm_0.svg)
-:label:`lstm_0`
+```{.python .input}
+%%tab tensorflow
+from d2l import tensorflow as d2l
+import tensorflow as tf
+```
 
-We assume that there are $h$ hidden units, the minibatch is of size $n$, and number of inputs is $d$. Thus, the input is $\mathbf{X}_t \in \mathbb{R}^{n \times d}$ and the hidden state of the last time step is $\mathbf{H}_{t-1} \in \mathbb{R}^{n \times h}$. Correspondingly, the gates are defined as follows: the input gate is $\mathbf{I}_t \in \mathbb{R}^{n \times h}$, the forget gate is $\mathbf{F}_t \in \mathbb{R}^{n \times h}$, and the output gate is $\mathbf{O}_t \in \mathbb{R}^{n \times h}$. They are calculated as follows:
+```{.python .input}
+%%tab jax
+from d2l import jax as d2l
+from flax import linen as nn
+import jax
+from jax import numpy as jnp
+```
+
+## Gated Memory Cell
+
+Each memory cell is equipped with an *internal state*
+and a number of multiplicative gates that determine whether
+(i) a given input should impact the internal state (the *input gate*),
+(ii) the internal state should be flushed to $0$ (the *forget gate*),
+and (iii) the internal state of a given neuron 
+should be allowed to impact the cell's output (the *output* gate). 
+
+
+### Gated Hidden State
+
+The key distinction between vanilla RNNs and LSTMs
+is that the latter support gating of the hidden state.
+This means that we have dedicated mechanisms for
+when a hidden state should be *updated* and
+also for when it should be *reset*.
+These mechanisms are learned and they address the concerns listed above.
+For instance, if the first token is of great importance
+we will learn not to update the hidden state after the first observation.
+Likewise, we will learn to skip irrelevant temporary observations.
+Last, we will learn to reset the latent state whenever needed.
+We discuss this in detail below.
+
+### Input Gate, Forget Gate, and Output Gate
+
+The data feeding into the LSTM gates are
+the input at the current time step and
+the hidden state of the previous time step,
+as illustrated in :numref:`fig_lstm_0`.
+Three fully connected layers with sigmoid activation functions
+compute the values of the input, forget, and output gates.
+As a result of the sigmoid activation,
+all values of the three gates
+are in the range of $(0, 1)$.
+Additionally, we require an *input node*,
+typically computed with a *tanh* activation function. 
+Intuitively, the *input gate* determines how much
+of the input node's value should be added 
+to the current memory cell internal state.
+The *forget gate* determines whether to keep
+the current value of the memory or flush it. 
+And the *output gate* determines whether 
+the memory cell should influence the output
+at the current time step. 
+
+
+![Computing the input gate, the forget gate, and the output gate in an LSTM model.](../img/lstm-0.svg)
+:label:`fig_lstm_0`
+
+Mathematically, suppose that there are $h$ hidden units, 
+the batch size is $n$, and the number of inputs is $d$.
+Thus, the input is $\mathbf{X}_t \in \mathbb{R}^{n \times d}$ 
+and the hidden state of the previous time step 
+is $\mathbf{H}_{t-1} \in \mathbb{R}^{n \times h}$. 
+Correspondingly, the gates at time step $t$
+are defined as follows: the input gate is $\mathbf{I}_t \in \mathbb{R}^{n \times h}$, 
+the forget gate is $\mathbf{F}_t \in \mathbb{R}^{n \times h}$, 
+and the output gate is $\mathbf{O}_t \in \mathbb{R}^{n \times h}$. 
+They are calculated as follows:
 
 $$
 \begin{aligned}
-\mathbf{I}_t &= \sigma(\mathbf{X}_t \mathbf{W}_{xi} + \mathbf{H}_{t-1} \mathbf{W}_{hi} + \mathbf{b}_i),\\
-\mathbf{F}_t &= \sigma(\mathbf{X}_t \mathbf{W}_{xf} + \mathbf{H}_{t-1} \mathbf{W}_{hf} + \mathbf{b}_f),\\
-\mathbf{O}_t &= \sigma(\mathbf{X}_t \mathbf{W}_{xo} + \mathbf{H}_{t-1} \mathbf{W}_{ho} + \mathbf{b}_o),
+\mathbf{I}_t &= \sigma(\mathbf{X}_t \mathbf{W}_{\textrm{xi}} + \mathbf{H}_{t-1} \mathbf{W}_{\textrm{hi}} + \mathbf{b}_\textrm{i}),\\
+\mathbf{F}_t &= \sigma(\mathbf{X}_t \mathbf{W}_{\textrm{xf}} + \mathbf{H}_{t-1} \mathbf{W}_{\textrm{hf}} + \mathbf{b}_\textrm{f}),\\
+\mathbf{O}_t &= \sigma(\mathbf{X}_t \mathbf{W}_{\textrm{xo}} + \mathbf{H}_{t-1} \mathbf{W}_{\textrm{ho}} + \mathbf{b}_\textrm{o}),
 \end{aligned}
 $$
 
-where $\mathbf{W}_{xi}, \mathbf{W}_{xf}, \mathbf{W}_{xo} \in \mathbb{R}^{d \times h}$ and $\mathbf{W}_{hi}, \mathbf{W}_{hf}, \mathbf{W}_{ho} \in \mathbb{R}^{h \times h}$ are weight parameters and $\mathbf{b}_i, \mathbf{b}_f, \mathbf{b}_o \in \mathbb{R}^{1 \times h}$ are bias parameters.
+where $\mathbf{W}_{\textrm{xi}}, \mathbf{W}_{\textrm{xf}}, \mathbf{W}_{\textrm{xo}} \in \mathbb{R}^{d \times h}$ and $\mathbf{W}_{\textrm{hi}}, \mathbf{W}_{\textrm{hf}}, \mathbf{W}_{\textrm{ho}} \in \mathbb{R}^{h \times h}$ are weight parameters 
+and $\mathbf{b}_\textrm{i}, \mathbf{b}_\textrm{f}, \mathbf{b}_\textrm{o} \in \mathbb{R}^{1 \times h}$ are bias parameters.
+Note that broadcasting 
+(see :numref:`subsec_broadcasting`)
+is triggered during the summation.
+We use sigmoid functions 
+(as introduced in :numref:`sec_mlp`) 
+to map the input values to the interval $(0, 1)$.
 
 
-### Candidate Memory Cell
+### Input Node
 
-Next we design the memory cell. Since we have not specified the action of the various gates yet, we first introduce the *candidate* memory cell $\tilde{\mathbf{C}}_t \in \mathbb{R}^{n \times h}$. Its computation is similar to the three gates described above, but using a $\tanh$ function with a value range for $[-1, 1]$ as the activation function. This leads to the following equation at time step $t$.
+Next we design the memory cell. 
+Since we have not specified the action of the various gates yet, 
+we first introduce the *input node* 
+$\tilde{\mathbf{C}}_t \in \mathbb{R}^{n \times h}$.
+Its computation is similar to that of the three gates described above, 
+but uses a $\tanh$ function with a value range for $(-1, 1)$ as the activation function. 
+This leads to the following equation at time step $t$:
 
-$$\tilde{\mathbf{C}}_t = \text{tanh}(\mathbf{X}_t \mathbf{W}_{xc} + \mathbf{H}_{t-1} \mathbf{W}_{hc} + \mathbf{b}_c).$$
+$$\tilde{\mathbf{C}}_t = \textrm{tanh}(\mathbf{X}_t \mathbf{W}_{\textrm{xc}} + \mathbf{H}_{t-1} \mathbf{W}_{\textrm{hc}} + \mathbf{b}_\textrm{c}),$$
 
-Here $\mathbf{W}_{xc} \in \mathbb{R}^{d \times h}$ and $\mathbf{W}_{hc} \in \mathbb{R}^{h \times h}$ are weight parameters and $\mathbf{b}_c \in \mathbb{R}^{1 \times h}$ is a bias parameter.
+where $\mathbf{W}_{\textrm{xc}} \in \mathbb{R}^{d \times h}$ and $\mathbf{W}_{\textrm{hc}} \in \mathbb{R}^{h \times h}$ are weight parameters and $\mathbf{b}_\textrm{c} \in \mathbb{R}^{1 \times h}$ is a bias parameter.
 
-A quick illustration of the candidate memory cell is shown in :numref:`lstm_1`.
+A quick illustration of the input node is shown in :numref:`fig_lstm_1`.
 
-![Computation of candidate memory cells in LSTM. ](../img/lstm_1.svg)
-:label:`lstm_1`
+![Computing the input node in an LSTM model.](../img/lstm-1.svg)
+:label:`fig_lstm_1`
 
 
-### Memory Cell
+### Memory Cell Internal State
 
-In GRUs, we had a single mechanism to govern input and forgetting. Here in LSTMs we have two parameters, $\mathbf{I}_t$ which governs how much we take new data into account via $\tilde{\mathbf{C}}_t$ and the forget parameter $\mathbf{F}_t$ which addresses how much of the old memory cell content $\mathbf{C}_{t-1} \in \mathbb{R}^{n \times h}$ we retain. Using the same pointwise multiplication trick as before, we arrive at the following update equation.
+In LSTMs, the input gate $\mathbf{I}_t$ governs 
+how much we take new data into account via $\tilde{\mathbf{C}}_t$ 
+and the forget gate $\mathbf{F}_t$ addresses 
+how much of the old cell internal state $\mathbf{C}_{t-1} \in \mathbb{R}^{n \times h}$ we retain. 
+Using the Hadamard (elementwise) product operator $\odot$
+we arrive at the following update equation:
 
 $$\mathbf{C}_t = \mathbf{F}_t \odot \mathbf{C}_{t-1} + \mathbf{I}_t \odot \tilde{\mathbf{C}}_t.$$
 
-If the forget gate is always approximately $1$ and the input gate is always approximately $0$, the past memory cells $\mathbf{C}_{t-1}$ will be saved over time and passed to the current time step. This design was introduced to alleviate the vanishing gradient problem and to better capture dependencies for time series with long range dependencies. We thus arrive at the flow diagram in :numref:`lstm_2`.
+If the forget gate is always 1 and the input gate is always 0, 
+the memory cell internal state $\mathbf{C}_{t-1}$
+will remain constant forever, 
+passing unchanged to each subsequent time step.
+However, input gates and forget gates
+give the model the flexibility of being able to learn 
+when to keep this value unchanged
+and when to perturb it in response 
+to subsequent inputs. 
+In practice, this design alleviates the vanishing gradient problem,
+resulting in models that are much easier to train,
+especially when facing datasets with long sequence lengths. 
 
-![Computation of memory cells in an LSTM. Here, the multiplication is carried out elementwise. ](../img/lstm_2.svg)
+We thus arrive at the flow diagram in :numref:`fig_lstm_2`.
 
-:label:`lstm_2`
+![Computing the memory cell internal state in an LSTM model.](../img/lstm-2.svg)
+
+:label:`fig_lstm_2`
 
 
-### Hidden States
+### Hidden State
 
-Last, we need to define how to compute the hidden state $\mathbf{H}_t \in \mathbb{R}^{n \times h}$. This is where the output gate comes into play. In LSTM it is simply a gated version of the $\tanh$ of the memory cell. This ensures that the values of $\mathbf{H}_t$ are always in the interval $(-1, 1)$. Whenever the output gate is $1$ we effectively pass all memory information through to the predictor, whereas for output $0$ we retain all the information only within the memory cell and perform no further processing. :numref:`lstm_3` has a graphical illustration of the data flow.
+Last, we need to define how to compute the output
+of the memory cell, i.e., the hidden state $\mathbf{H}_t \in \mathbb{R}^{n \times h}$, as seen by other layers. 
+This is where the output gate comes into play.
+In LSTMs, we first apply $\tanh$ to the memory cell internal state
+and then apply another point-wise multiplication,
+this time with the output gate.
+This ensures that the values of $\mathbf{H}_t$ 
+are always in the interval $(-1, 1)$:
 
 $$\mathbf{H}_t = \mathbf{O}_t \odot \tanh(\mathbf{C}_t).$$
 
-![Computation of the hidden state. Multiplication is elementwise. ](../img/lstm_3.svg)
-:label:`lstm_3`
+
+Whenever the output gate is close to 1, 
+we allow the memory cell internal state to impact the subsequent layers uninhibited,
+whereas for output gate values close to 0,
+we prevent the current memory from impacting other layers of the network
+at the current time step. 
+Note that a memory cell can accrue information 
+across many time steps without impacting the rest of the network
+(as long as the output gate takes values close to 0),
+and then suddenly impact the network at a subsequent time step
+as soon as the output gate flips from values close to 0
+to values close to 1. :numref:`fig_lstm_3` has a graphical illustration of the data flow.
+
+![Computing the hidden state in an LSTM model.](../img/lstm-3.svg)
+:label:`fig_lstm_3`
 
 
 
 ## Implementation from Scratch
 
-Now let us implement an LSTM from scratch. As same as the experiments in the previous sections, we first load data of *The Time Machine*.
+Now let's implement an LSTM from scratch.
+As same as the experiments in :numref:`sec_rnn-scratch`,
+we first load *The Time Machine* dataset.
+
+### [**Initializing Model Parameters**]
+
+Next, we need to define and initialize the model parameters. 
+As previously, the hyperparameter `num_hiddens` 
+dictates the number of hidden units.
+We initialize weights following a Gaussian distribution
+with 0.01 standard deviation, 
+and we set the biases to 0.
 
 ```{.python .input}
-from d2l import mxnet as d2l
-from mxnet import np, npx
-from mxnet.gluon import rnn
-npx.set_np()
+%%tab pytorch, mxnet, tensorflow
+class LSTMScratch(d2l.Module):
+    def __init__(self, num_inputs, num_hiddens, sigma=0.01):
+        super().__init__()
+        self.save_hyperparameters()
 
-batch_size, num_steps = 32, 35
-train_iter, vocab = d2l.load_data_time_machine(batch_size, num_steps)
+        if tab.selected('mxnet'):
+            init_weight = lambda *shape: d2l.randn(*shape) * sigma
+            triple = lambda: (init_weight(num_inputs, num_hiddens),
+                              init_weight(num_hiddens, num_hiddens),
+                              d2l.zeros(num_hiddens))
+        if tab.selected('pytorch'):
+            init_weight = lambda *shape: nn.Parameter(d2l.randn(*shape) * sigma)
+            triple = lambda: (init_weight(num_inputs, num_hiddens),
+                              init_weight(num_hiddens, num_hiddens),
+                              nn.Parameter(d2l.zeros(num_hiddens)))
+        if tab.selected('tensorflow'):
+            init_weight = lambda *shape: tf.Variable(d2l.normal(shape) * sigma)
+            triple = lambda: (init_weight(num_inputs, num_hiddens),
+                              init_weight(num_hiddens, num_hiddens),
+                              tf.Variable(d2l.zeros(num_hiddens)))
+
+        self.W_xi, self.W_hi, self.b_i = triple()  # Input gate
+        self.W_xf, self.W_hf, self.b_f = triple()  # Forget gate
+        self.W_xo, self.W_ho, self.b_o = triple()  # Output gate
+        self.W_xc, self.W_hc, self.b_c = triple()  # Input node
 ```
 
 ```{.python .input}
-#@tab pytorch
-from d2l import torch as d2l
-import torch
-from torch import nn
+%%tab jax
+class LSTMScratch(d2l.Module):
+    num_inputs: int
+    num_hiddens: int
+    sigma: float = 0.01
 
-batch_size, num_steps = 32, 35
-train_iter, vocab = d2l.load_data_time_machine(batch_size, num_steps)
+    def setup(self):
+        init_weight = lambda name, shape: self.param(name,
+                                                     nn.initializers.normal(self.sigma),
+                                                     shape)
+        triple = lambda name : (
+            init_weight(f'W_x{name}', (self.num_inputs, self.num_hiddens)),
+            init_weight(f'W_h{name}', (self.num_hiddens, self.num_hiddens)),
+            self.param(f'b_{name}', nn.initializers.zeros, (self.num_hiddens)))
+
+        self.W_xi, self.W_hi, self.b_i = triple('i')  # Input gate
+        self.W_xf, self.W_hf, self.b_f = triple('f')  # Forget gate
+        self.W_xo, self.W_ho, self.b_o = triple('o')  # Output gate
+        self.W_xc, self.W_hc, self.b_c = triple('c')  # Input node
 ```
 
-### Initializing Model Parameters
+:begin_tab:`pytorch, mxnet, tensorflow`
+[**The actual model**] is defined as described above,
+consisting of three gates and an input node. 
+Note that only the hidden state is passed to the output layer.
+:end_tab:
 
-Next we need to define and initialize the model parameters. As previously, the hyperparameter `num_hiddens` defines the number of hidden units. We initialize weights following a Gaussian distribution with $0.01$ standard deviation, and we set the biases to $0$.
-
-```{.python .input}
-def get_lstm_params(vocab_size, num_hiddens, device):
-    num_inputs = num_outputs = vocab_size
-
-    def normal(shape):
-        return np.random.normal(scale=0.01, size=shape, ctx=device)
-
-    def three():
-        return (normal((num_inputs, num_hiddens)),
-                normal((num_hiddens, num_hiddens)),
-                np.zeros(num_hiddens, ctx=device))
-
-    W_xi, W_hi, b_i = three()  # Input gate parameters
-    W_xf, W_hf, b_f = three()  # Forget gate parameters
-    W_xo, W_ho, b_o = three()  # Output gate parameters
-    W_xc, W_hc, b_c = three()  # Candidate cell parameters
-    # Output layer parameters
-    W_hq = normal((num_hiddens, num_outputs))
-    b_q = np.zeros(num_outputs, ctx=device)
-    # Attach gradients
-    params = [W_xi, W_hi, b_i, W_xf, W_hf, b_f, W_xo, W_ho, b_o, W_xc, W_hc,
-              b_c, W_hq, b_q]
-    for param in params:
-        param.attach_grad()
-    return params
-```
+:begin_tab:`jax`
+[**The actual model**] is defined as described above,
+consisting of three gates and an input node. 
+Note that only the hidden state is passed to the output layer.
+A long for-loop in the `forward` method will result in an extremely long
+JIT compilation time for the first run. As a solution to this, instead
+of using a for-loop to update the state with every time step,
+JAX has `jax.lax.scan` utility transformation to achieve the same behavior.
+It takes in an initial state called `carry` and an `inputs` array which
+is scanned on its leading axis. The `scan` transformation ultimately
+returns the final state and the stacked outputs as expected.
+:end_tab:
 
 ```{.python .input}
-#@tab pytorch
-def get_lstm_params(vocab_size, num_hiddens, device):
-    num_inputs = num_outputs = vocab_size
-
-    def normal(shape):
-        return torch.randn(size=shape, device=device)*0.01
-
-    def three():
-        return (normal((num_inputs, num_hiddens)),
-                normal((num_hiddens, num_hiddens)),
-                d2l.zeros(num_hiddens, device=device))
-
-    W_xi, W_hi, b_i = three()  # Input gate parameters
-    W_xf, W_hf, b_f = three()  # Forget gate parameters
-    W_xo, W_ho, b_o = three()  # Output gate parameters
-    W_xc, W_hc, b_c = three()  # Candidate cell parameters
-    # Output layer parameters
-    W_hq = normal((num_hiddens, num_outputs))
-    b_q = d2l.zeros(num_outputs, device=device)
-    # Attach gradients
-    params = [W_xi, W_hi, b_i, W_xf, W_hf, b_f, W_xo, W_ho, b_o, W_xc, W_hc,
-              b_c, W_hq, b_q]
-    for param in params:
-        param.requires_grad_(True)
-    return params
-```
-
-### Defining the Model
-
-In the initialization function, the hidden state of the LSTM needs to return an additional memory cell with a value of $0$ and a shape of (batch size, number of hidden units). Hence we get the following state initialization.
-
-```{.python .input}
-def init_lstm_state(batch_size, num_hiddens, device):
-    return (np.zeros((batch_size, num_hiddens), ctx=device),
-            np.zeros((batch_size, num_hiddens), ctx=device))
-```
-
-```{.python .input}
-#@tab pytorch
-def init_lstm_state(batch_size, num_hiddens, device):
-    return (torch.zeros((batch_size, num_hiddens), device=device),
-            torch.zeros((batch_size, num_hiddens), device=device))
-```
-
-The actual model is defined just like what we discussed before: providing three gates and an auxiliary memory cell. Note that only the hidden state is passed to the output layer. The memory cells $\mathbf{C}_t$ do not participate in the output computation directly.
-
-```{.python .input}
-def lstm(inputs, state, params):
-    [W_xi, W_hi, b_i, W_xf, W_hf, b_f, W_xo, W_ho, b_o, W_xc, W_hc, b_c,
-     W_hq, b_q] = params
-    (H, C) = state
+%%tab pytorch, mxnet, tensorflow
+@d2l.add_to_class(LSTMScratch)
+def forward(self, inputs, H_C=None):
+    if H_C is None:
+        # Initial state with shape: (batch_size, num_hiddens)
+        if tab.selected('mxnet'):
+            H = d2l.zeros((inputs.shape[1], self.num_hiddens),
+                          ctx=inputs.ctx)
+            C = d2l.zeros((inputs.shape[1], self.num_hiddens),
+                          ctx=inputs.ctx)
+        if tab.selected('pytorch'):
+            H = d2l.zeros((inputs.shape[1], self.num_hiddens),
+                          device=inputs.device)
+            C = d2l.zeros((inputs.shape[1], self.num_hiddens),
+                          device=inputs.device)
+        if tab.selected('tensorflow'):
+            H = d2l.zeros((inputs.shape[1], self.num_hiddens))
+            C = d2l.zeros((inputs.shape[1], self.num_hiddens))
+    else:
+        H, C = H_C
     outputs = []
     for X in inputs:
-        I = npx.sigmoid(np.dot(X, W_xi) + np.dot(H, W_hi) + b_i)
-        F = npx.sigmoid(np.dot(X, W_xf) + np.dot(H, W_hf) + b_f)
-        O = npx.sigmoid(np.dot(X, W_xo) + np.dot(H, W_ho) + b_o)
-        C_tilda = np.tanh(np.dot(X, W_xc) + np.dot(H, W_hc) + b_c)
-        C = F * C + I * C_tilda
-        H = O * np.tanh(C)
-        Y = np.dot(H, W_hq) + b_q
-        outputs.append(Y)
-    return np.concatenate(outputs, axis=0), (H, C)
+        I = d2l.sigmoid(d2l.matmul(X, self.W_xi) +
+                        d2l.matmul(H, self.W_hi) + self.b_i)
+        F = d2l.sigmoid(d2l.matmul(X, self.W_xf) +
+                        d2l.matmul(H, self.W_hf) + self.b_f)
+        O = d2l.sigmoid(d2l.matmul(X, self.W_xo) +
+                        d2l.matmul(H, self.W_ho) + self.b_o)
+        C_tilde = d2l.tanh(d2l.matmul(X, self.W_xc) +
+                           d2l.matmul(H, self.W_hc) + self.b_c)
+        C = F * C + I * C_tilde
+        H = O * d2l.tanh(C)
+        outputs.append(H)
+    return outputs, (H, C)
 ```
 
 ```{.python .input}
-#@tab pytorch
-def lstm(inputs, state, params):
-    [W_xi, W_hi, b_i, W_xf, W_hf, b_f, W_xo, W_ho, b_o, W_xc, W_hc, b_c,
-     W_hq, b_q] = params
-    (H, C) = state 
-    outputs = []
-    for X in inputs:
-        I = torch.sigmoid((X @ W_xi) + (H @ W_hi) + b_i)
-        F = torch.sigmoid((X @ W_xf) + (H @ W_hf) + b_f)
-        O = torch.sigmoid((X @ W_xo) + (H @ W_ho) + b_o)
-        C_tilda = torch.tanh((X @ W_xc) + (H @ W_hc) + b_c)
-        C = F * C + I * C_tilda
-        H = O * torch.tanh(C)
-        Y = (H @ W_hq) + b_q
-        outputs.append(Y)
-    return torch.cat(outputs, dim=0), (H, C)
+%%tab jax
+@d2l.add_to_class(LSTMScratch)
+def forward(self, inputs, H_C=None):
+    # Use lax.scan primitive instead of looping over the
+    # inputs, since scan saves time in jit compilation.
+    def scan_fn(carry, X):
+        H, C = carry
+        I = d2l.sigmoid(d2l.matmul(X, self.W_xi) + (
+            d2l.matmul(H, self.W_hi)) + self.b_i)
+        F = d2l.sigmoid(d2l.matmul(X, self.W_xf) +
+                        d2l.matmul(H, self.W_hf) + self.b_f)
+        O = d2l.sigmoid(d2l.matmul(X, self.W_xo) +
+                        d2l.matmul(H, self.W_ho) + self.b_o)
+        C_tilde = d2l.tanh(d2l.matmul(X, self.W_xc) +
+                           d2l.matmul(H, self.W_hc) + self.b_c)
+        C = F * C + I * C_tilde
+        H = O * d2l.tanh(C)
+        return (H, C), H  # return carry, y
+
+    if H_C is None:
+        batch_size = inputs.shape[1]
+        carry = jnp.zeros((batch_size, self.num_hiddens)), \
+                jnp.zeros((batch_size, self.num_hiddens))
+    else:
+        carry = H_C
+
+    # scan takes the scan_fn, initial carry state, xs with leading axis to be scanned
+    carry, outputs = jax.lax.scan(scan_fn, carry, inputs)
+    return outputs, carry
 ```
 
-### Training and Prediction
+### [**Training**] and Prediction
 
-Let us train an LSTM as same as what we did in :numref:`sec_gru`, by calling the `RNNModelScratch` function as introduced in :numref:`sec_rnn_scratch`.
+Let's train an LSTM model by instantiating the `RNNLMScratch` class from :numref:`sec_rnn-scratch`.
 
 ```{.python .input}
-#@tab all
-vocab_size, num_hiddens, device = len(vocab), 256, d2l.try_gpu()
-num_epochs, lr = 500, 1
-model = d2l.RNNModelScratch(len(vocab), num_hiddens, device, get_lstm_params,
-                            init_lstm_state, lstm)
-d2l.train_ch8(model, train_iter, vocab, lr, num_epochs, device)
+%%tab all
+data = d2l.TimeMachine(batch_size=1024, num_steps=32)
+if tab.selected('mxnet', 'pytorch', 'jax'):
+    lstm = LSTMScratch(num_inputs=len(data.vocab), num_hiddens=32)
+    model = d2l.RNNLMScratch(lstm, vocab_size=len(data.vocab), lr=4)
+    trainer = d2l.Trainer(max_epochs=50, gradient_clip_val=1, num_gpus=1)
+if tab.selected('tensorflow'):
+    with d2l.try_gpu():
+        lstm = LSTMScratch(num_inputs=len(data.vocab), num_hiddens=32)
+        model = d2l.RNNLMScratch(lstm, vocab_size=len(data.vocab), lr=4)
+    trainer = d2l.Trainer(max_epochs=50, gradient_clip_val=1)
+trainer.fit(model, data)
 ```
 
-## Concise Implementation
+## [**Concise Implementation**]
 
-In Gluon, we can directly call the `LSTM` class in the `rnn` module. This encapsulates all the configuration details that we made explicit above. The code is significantly faster as it uses compiled operators rather than Python for many details that we spelled out in detail before.
+Using high-level APIs,
+we can directly instantiate an LSTM model.
+This encapsulates all the configuration details 
+that we made explicit above. 
+The code is significantly faster as it uses 
+compiled operators rather than Python
+for many details that we spelled out before.
 
 ```{.python .input}
-lstm_layer = rnn.LSTM(num_hiddens)
-model = d2l.RNNModel(lstm_layer, len(vocab))
-d2l.train_ch8(model, train_iter, vocab, lr, num_epochs, device)
+%%tab mxnet
+class LSTM(d2l.RNN):
+    def __init__(self, num_hiddens):
+        d2l.Module.__init__(self)
+        self.save_hyperparameters()
+        self.rnn = rnn.LSTM(num_hiddens)
+
+    def forward(self, inputs, H_C=None):
+        if H_C is None: H_C = self.rnn.begin_state(
+            inputs.shape[1], ctx=inputs.ctx)
+        return self.rnn(inputs, H_C)
 ```
 
 ```{.python .input}
-#@tab pytorch
-num_inputs = vocab_size
-lstm_layer = nn.LSTM(num_inputs, num_hiddens)
-model = d2l.RNNModel(lstm_layer, len(vocab))
-model = model.to(device)
-d2l.train_ch8(model, train_iter, vocab, lr, num_epochs, device)
+%%tab pytorch
+class LSTM(d2l.RNN):
+    def __init__(self, num_inputs, num_hiddens):
+        d2l.Module.__init__(self)
+        self.save_hyperparameters()
+        self.rnn = nn.LSTM(num_inputs, num_hiddens)
+
+    def forward(self, inputs, H_C=None):
+        return self.rnn(inputs, H_C)
 ```
 
-In many cases, LSTMs perform slightly better than GRUs but they are more costly to train and execute due to the larger latent state size. LSTMs are the prototypical latent variable autoregressive model with nontrivial state control. Many variants thereof have been proposed over the years, e.g., multiple layers, residual connections, different types of regularization. However, training LSTMs and other sequence models (such as GRU) are quite costly due to the long range dependency of the sequence. Later we will encounter alternative models such as Transformers that can be used in some cases.
+```{.python .input}
+%%tab tensorflow
+class LSTM(d2l.RNN):
+    def __init__(self, num_hiddens):
+        d2l.Module.__init__(self)
+        self.save_hyperparameters()
+        self.rnn = tf.keras.layers.LSTM(
+                num_hiddens, return_sequences=True,
+                return_state=True, time_major=True)
+
+    def forward(self, inputs, H_C=None):
+        outputs, *H_C = self.rnn(inputs, H_C)
+        return outputs, H_C
+```
+
+```{.python .input}
+%%tab jax
+class LSTM(d2l.RNN):
+    num_hiddens: int
+
+    @nn.compact
+    def __call__(self, inputs, H_C=None, training=False):
+        if H_C is None:
+            batch_size = inputs.shape[1]
+            H_C = nn.OptimizedLSTMCell.initialize_carry(jax.random.PRNGKey(0),
+                                                        (batch_size,),
+                                                        self.num_hiddens)
+
+        LSTM = nn.scan(nn.OptimizedLSTMCell, variable_broadcast="params",
+                       in_axes=0, out_axes=0, split_rngs={"params": False})
+
+        H_C, outputs = LSTM()(H_C, inputs)
+        return outputs, H_C
+```
+
+```{.python .input}
+%%tab all
+if tab.selected('pytorch'):
+    lstm = LSTM(num_inputs=len(data.vocab), num_hiddens=32)
+if tab.selected('mxnet', 'tensorflow', 'jax'):
+    lstm = LSTM(num_hiddens=32)
+if tab.selected('mxnet', 'pytorch', 'jax'):
+    model = d2l.RNNLM(lstm, vocab_size=len(data.vocab), lr=4)
+if tab.selected('tensorflow'):
+    with d2l.try_gpu():
+        model = d2l.RNNLM(lstm, vocab_size=len(data.vocab), lr=4)
+trainer.fit(model, data)
+```
+
+```{.python .input}
+%%tab mxnet, pytorch
+model.predict('it has', 20, data.vocab, d2l.try_gpu())
+```
+
+```{.python .input}
+%%tab tensorflow
+model.predict('it has', 20, data.vocab)
+```
+
+```{.python .input}
+%%tab jax
+model.predict('it has', 20, data.vocab, trainer.state.params)
+```
+
+LSTMs are the prototypical latent variable autoregressive model with nontrivial state control.
+Many variants thereof have been proposed over the years, e.g., multiple layers, residual connections, different types of regularization. However, training LSTMs and other sequence models (such as GRUs) is quite costly because of the long range dependency of the sequence.
+Later we will encounter alternative models such as Transformers that can be used in some cases.
 
 
 ## Summary
 
-* LSTMs have three types of gates: input gates, forget gates, and output gates which control the flow of information.
-* The hidden layer output of LSTM includes hidden states and memory cells. Only hidden states are passed into the output layer. Memory cells are entirely internal.
-* LSTMs can cope with vanishing and exploding gradients.
+While LSTMs were published in 1997, 
+they rose to great prominence 
+with some victories in prediction competitions in the mid-2000s,
+and became the dominant models for sequence learning from 2011 
+until the rise of Transformer models, starting in 2017.
+Even Tranformers owe some of their key ideas 
+to architecture design innovations introduced by the LSTM.
+
+
+LSTMs have three types of gates: 
+input gates, forget gates, and output gates 
+that control the flow of information.
+The hidden layer output of LSTM includes the hidden state and the memory cell internal state. 
+Only the hidden state is passed into the output layer while 
+the memory cell internal state remains entirely internal.
+LSTMs can alleviate vanishing and exploding gradients.
+
 
 
 ## Exercises
 
-1. Adjust the hyperparameters. Observe and analyze the impact on runtime, perplexity, and the generated output.
-1. How would you need to change the model to generate proper words as opposed to sequences of characters?
+1. Adjust the hyperparameters and analyze their influence on running time, perplexity, and the output sequence.
+1. How would you need to change the model to generate proper words rather than just sequences of characters?
 1. Compare the computational cost for GRUs, LSTMs, and regular RNNs for a given hidden dimension. Pay special attention to the training and inference cost.
-1. Since the candidate memory cells ensure that the value range is between $-1$ and $1$ by  using the $\tanh$ function, why does the hidden state need to use the $\tanh$ function again to ensure that the output value range is between $-1$ and $1$?
-1. Implement an LSTM for time series prediction rather than character sequence prediction.
+1. Since the candidate memory cell ensures that the value range is between $-1$ and $1$ by  using the $\tanh$ function, why does the hidden state need to use the $\tanh$ function again to ensure that the output value range is between $-1$ and $1$?
+1. Implement an LSTM model for time series prediction rather than character sequence prediction.
 
 :begin_tab:`mxnet`
 [Discussions](https://discuss.d2l.ai/t/343)
+:end_tab:
+
+:begin_tab:`pytorch`
+[Discussions](https://discuss.d2l.ai/t/1057)
+:end_tab:
+
+:begin_tab:`tensorflow`
+[Discussions](https://discuss.d2l.ai/t/3861)
+:end_tab:
+
+:begin_tab:`jax`
+[Discussions](https://discuss.d2l.ai/t/18016)
 :end_tab:

@@ -1,468 +1,907 @@
-#  Sequence to Sequence
+```{.python .input}
+%load_ext d2lbook.tab
+tab.interact_select('mxnet', 'pytorch', 'tensorflow', 'jax')
+```
+
+#  Sequence-to-Sequence Learning for Machine Translation
 :label:`sec_seq2seq`
 
-The sequence to sequence (seq2seq) model is based on the encoder-decoder architecture to generate a sequence output for a sequence input, as demonstrated in :numref:`fig_seq2seq`. Both the encoder and the decoder use recurrent neural networks (RNNs) to handle sequence inputs of variable length. The hidden state of the encoder is used directly to initialize the decoder hidden state to pass information from the encoder to the decoder.
+In so-called sequence-to-sequence problems such as machine translation
+(as discussed in :numref:`sec_machine_translation`),
+where inputs and outputs each consist 
+of variable-length unaligned sequences,
+we generally rely on encoder--decoder architectures
+(:numref:`sec_encoder-decoder`).
+In this section,
+we will demonstrate the application 
+of an encoder--decoder architecture,
+where both the encoder and decoder 
+are implemented as RNNs,
+to the task of machine translation
+:cite:`Sutskever.Vinyals.Le.2014,Cho.Van-Merrienboer.Gulcehre.ea.2014`.
 
-![The sequence to sequence model architecture.](../img/seq2seq.svg)
+Here, the encoder RNN will take a variable-length sequence as input 
+and transform it into a fixed-shape hidden state.
+Later, in :numref:`chap_attention-and-transformers`,
+we will introduce attention mechanisms, 
+which allow us to access encoded inputs
+without having to compress the entire input
+into a single fixed-length representation.
+
+Then to generate the output sequence, 
+one token at a time,
+the decoder model, 
+consisting of a separate RNN,
+will predict each successive target token
+given both the input sequence
+and the preceding tokens in the output.
+During training, the decoder will typically
+be conditioned upon the preceding tokens
+in the official "ground truth" label. 
+However, at test time, we will want to condition
+each output of the decoder on the tokens already predicted. 
+Note that if we ignore the encoder,
+the decoder in a sequence-to-sequence architecture 
+behaves just like a normal language model.
+:numref:`fig_seq2seq` illustrates
+how to use two RNNs
+for sequence-to-sequence learning
+in machine translation.
+
+
+![Sequence-to-sequence learning with an RNN encoder and an RNN decoder.](../img/seq2seq.svg)
 :label:`fig_seq2seq`
 
-The layers in the encoder and the decoder are illustrated in :numref:`fig_seq2seq_details`.
-
-![Layers in the encoder and the decoder.](../img/seq2seq-details.svg)
-:label:`fig_seq2seq_details`
-
-In this section we will explain and implement the seq2seq model to train on the machine translation dataset.
+In :numref:`fig_seq2seq`,
+the special "&lt;eos&gt;" token
+marks the end of the sequence.
+Our model can stop making predictions
+once this token is generated.
+At the initial time step of the RNN decoder,
+there are two special design decisions to be aware of:
+First, we begin every input with a special 
+beginning-of-sequence "&lt;bos&gt;" token.
+Second, we may feed
+the final hidden state of the encoder
+into the decoder
+at every single decoding time step :cite:`Cho.Van-Merrienboer.Gulcehre.ea.2014`.
+In some other designs,
+such as that of :citet:`Sutskever.Vinyals.Le.2014`,
+the final hidden state of the RNN encoder
+is used
+to initiate the hidden state of the decoder
+only at the first decoding step.
 
 ```{.python .input}
+%%tab mxnet
+import collections
 from d2l import mxnet as d2l
+import math
 from mxnet import np, npx, init, gluon, autograd
 from mxnet.gluon import nn, rnn
 npx.set_np()
 ```
 
 ```{.python .input}
-#@tab pytorch
+%%tab pytorch
+import collections
 from d2l import torch as d2l
+import math
 import torch
 from torch import nn
+from torch.nn import functional as F
 ```
+
+```{.python .input}
+%%tab tensorflow
+import collections
+from d2l import tensorflow as d2l
+import math
+import tensorflow as tf
+```
+
+```{.python .input}
+%%tab jax
+import collections
+from d2l import jax as d2l
+from flax import linen as nn
+from functools import partial
+import jax
+from jax import numpy as jnp
+import math
+import optax
+```
+
+## Teacher Forcing
+
+While running the encoder on the input sequence
+is relatively straightforward,
+handling the input and output 
+of the decoder requires more care. 
+The most common approach is sometimes called *teacher forcing*.
+Here, the original target sequence (token labels)
+is fed into the decoder as input.
+More concretely,
+the special beginning-of-sequence token
+and the original target sequence,
+excluding the final token,
+are concatenated as input to the decoder,
+while the decoder output (labels for training) is
+the original target sequence,
+shifted by one token:
+"&lt;bos&gt;", "Ils", "regardent", "." $\rightarrow$
+"Ils", "regardent", ".", "&lt;eos&gt;" (:numref:`fig_seq2seq`).
+
+Our implementation in
+:numref:`subsec_loading-seq-fixed-len`
+prepared training data for teacher forcing,
+where shifting tokens for self-supervised learning
+is similar to the training of language models in
+:numref:`sec_language-model`.
+An alternative approach is
+to feed the *predicted* token
+from the previous time step
+as the current input to the decoder.
+
+
+In the following, we explain the design 
+depicted in :numref:`fig_seq2seq`
+in greater detail.
+We will train this model for machine translation
+on the English--French dataset as introduced in
+:numref:`sec_machine_translation`.
 
 ## Encoder
 
-Recall that the encoder of seq2seq can transform the inputs of variable length to a fixed-length context vector $\mathbf{c}$ by encoding the sequence information into $\mathbf{c}$. We usually use RNN layers within the encoder.
-Suppose that we have an input sequence $x_1, \ldots, x_T$, where $x_t$ is the $t^\mathrm{th}$ word. At time step $t$, the RNN will have two vectors as the input: the feature vector $\mathbf{x}_t$ of $x_t$ and the hidden state of the last time step $\mathbf{h}_{t-1}$. Let us denote the transformation of the RNN's hidden states by a function $f$:
+Recall that the encoder transforms an input sequence of variable length
+into a fixed-shape *context variable* $\mathbf{c}$ (see :numref:`fig_seq2seq`).
 
-$$\mathbf{h}_t = f (\mathbf{x}_t, \mathbf{h}_{t-1}).$$
 
-Next, the encoder captures information of all the hidden states and encodes it into the context vector $\mathbf{c}$ with a function $q$:
+Consider a single sequence example (batch size 1).
+Suppose the input sequence is $x_1, \ldots, x_T$, 
+such that $x_t$ is the $t^{\textrm{th}}$ token.
+At time step $t$, the RNN transforms
+the input feature vector $\mathbf{x}_t$ for $x_t$
+and the hidden state $\mathbf{h} _{t-1}$ 
+from the previous time step 
+into the current hidden state $\mathbf{h}_t$.
+We can use a function $f$ to express 
+the transformation of the RNN's recurrent layer:
 
-$$\mathbf{c} = q (\mathbf{h}_1, \ldots, \mathbf{h}_T).$$
+$$\mathbf{h}_t = f(\mathbf{x}_t, \mathbf{h}_{t-1}). $$
 
-For example, if we choose $q$ as $q (\mathbf{h}_1, \ldots, \mathbf{h}_T) = \mathbf{h}_T$, then the context vector will be the final hidden state $\mathbf{h}_T$.
+In general, the encoder transforms 
+the hidden states at all time steps
+into a context variable through a customized function $q$:
 
-So far what we describe above is a unidirectional RNN, where each time step's hidden state depends only on the previous time steps'. We can also use other forms of RNNs such as GRUs, LSTMs, and bidirectional RNNs to encode the sequential input.
+$$\mathbf{c} =  q(\mathbf{h}_1, \ldots, \mathbf{h}_T).$$
 
-Now let us implement the seq2seq's encoder.
-Here we use the word embedding layer to obtain the feature vector
-according to the word index of the input language.
-Those feature vectors will be fed to a multi-layer LSTM.
-The input for the encoder is a batch of sequences, which is 2-D tensor with shape (batch size, sequence length). The encoder returns both the LSTM outputs, i.e., hidden states of all the time steps, as well as the hidden state and the memory cell of the final time step.
+For example, in :numref:`fig_seq2seq`,
+the context variable is just the hidden state $\mathbf{h}_T$
+corresponding to the encoder RNN's representation
+after processing the final token of the input sequence.
+
+In this example, we have used a unidirectional RNN
+to design the encoder,
+where the hidden state only depends on the input subsequence 
+at and before the time step of the hidden state.
+We can also construct encoders using bidirectional RNNs.
+In this case, a hidden state depends on the subsequence before and after the time step 
+(including the input at the current time step), 
+which encodes the information of the entire sequence.
+
+
+Now let's [**implement the RNN encoder**].
+Note that we use an *embedding layer*
+to obtain the feature vector for each token in the input sequence.
+The weight of an embedding layer is a matrix,
+where the number of rows corresponds to 
+the size of the input vocabulary (`vocab_size`)
+and number of columns corresponds to 
+the feature vector's dimension (`embed_size`).
+For any input token index $i$,
+the embedding layer fetches the $i^{\textrm{th}}$ row 
+(starting from 0) of the weight matrix
+to return its feature vector.
+Here we implement the encoder with a multilayer GRU.
 
 ```{.python .input}
-#@save
-class Seq2SeqEncoder(d2l.Encoder):
+%%tab mxnet
+class Seq2SeqEncoder(d2l.Encoder):  #@save
+    """The RNN encoder for sequence-to-sequence learning."""
     def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
-                 dropout=0, **kwargs):
-        super(Seq2SeqEncoder, self).__init__(**kwargs)
+                 dropout=0):
+        super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.rnn = rnn.LSTM(num_hiddens, num_layers, dropout=dropout)
-
+        self.rnn = d2l.GRU(num_hiddens, num_layers, dropout)
+        self.initialize(init.Xavier())
+            
     def forward(self, X, *args):
-        # `X` shape: (`batch_size`, `seq_len`, `embed_size`)
-        X = self.embedding(X)
-        # RNN needs first axes to be time step, i.e., `seq_len`
-        X = X.swapaxes(0, 1)
-        state = self.rnn.begin_state(batch_size=X.shape[1], ctx=X.ctx)
-        out, state = self.rnn(X, state)
-        # `out` shape: (`seq_len`, `batch_size`, `num_hiddens`)
-        # `state` shape: (`num_layers`, `batch_size`, `num_hiddens`),
-        # where "state" contains the hidden state and the memory cell
-        return out, state
+        # X shape: (batch_size, num_steps)
+        embs = self.embedding(d2l.transpose(X))
+        # embs shape: (num_steps, batch_size, embed_size)    
+        outputs, state = self.rnn(embs)
+        # outputs shape: (num_steps, batch_size, num_hiddens)
+        # state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, state
 ```
 
 ```{.python .input}
-#@tab pytorch
-#@save
-class Seq2SeqEncoder(d2l.Encoder):
+%%tab pytorch
+def init_seq2seq(module):  #@save
+    """Initialize weights for sequence-to-sequence learning."""
+    if type(module) == nn.Linear:
+         nn.init.xavier_uniform_(module.weight)
+    if type(module) == nn.GRU:
+        for param in module._flat_weights_names:
+            if "weight" in param:
+                nn.init.xavier_uniform_(module._parameters[param])
+```
+
+```{.python .input}
+%%tab pytorch
+class Seq2SeqEncoder(d2l.Encoder):  #@save
+    """The RNN encoder for sequence-to-sequence learning."""
     def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
-                 dropout=0, **kwargs):
-        super(Seq2SeqEncoder, self).__init__(**kwargs)
+                 dropout=0):
+        super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.rnn = nn.LSTM(embed_size, num_hiddens, num_layers, dropout=dropout)
-
+        self.rnn = d2l.GRU(embed_size, num_hiddens, num_layers, dropout)
+        self.apply(init_seq2seq)
+            
     def forward(self, X, *args):
-        X = self.embedding(X)  # X shape: (batch_size, seq_len, embed_size)
-        # RNN needs first axes to be time step, i.e., seq_len
-        X = X.permute(1, 0, 2)
-        out, state = self.rnn(X) # When state is not mentioned, it defaults to zeros
-        # out shape: (seq_len, batch_size, num_hiddens)
-        # state shape: (num_layers, batch_size, num_hiddens),
-        # where "state" contains the hidden state and the memory cell
-        return out, state
-```
-
-Next, we will create a minibatch sequence input with a batch size of 4 and 7 time steps. We assume the number of hidden layers of the LSTM unit is 2 and the number of hidden units is 16. The output shape returned by the encoder after performing forward calculation on the input is (number of time steps, batch size, number of hidden units). The shape of the multi-layer hidden state of the gated recurrent unit in the final time step is (number of hidden layers, batch size, number of hidden units). For the gated recurrent unit, the `state` list contains only one element, which is the hidden state. If long short-term memory is used, the `state` list will also contain another element, which is the memory cell.
-
-```{.python .input}
-encoder = Seq2SeqEncoder(vocab_size=10, embed_size=8, num_hiddens=16,
-                         num_layers=2)
-encoder.initialize()
-X = d2l.zeros((4, 7))
-output, state = encoder(X)
-output.shape
+        # X shape: (batch_size, num_steps)
+        embs = self.embedding(d2l.astype(d2l.transpose(X), d2l.int64))
+        # embs shape: (num_steps, batch_size, embed_size)
+        outputs, state = self.rnn(embs)
+        # outputs shape: (num_steps, batch_size, num_hiddens)
+        # state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, state
 ```
 
 ```{.python .input}
-#@tab pytorch
-encoder = Seq2SeqEncoder(vocab_size=10, embed_size=8, num_hiddens=16,
-                         num_layers=2)
-encoder.eval()
-X = d2l.zeros((4, 7), dtype=torch.long)
-output, state = encoder(X)
-output.shape
+%%tab tensorflow
+class Seq2SeqEncoder(d2l.Encoder):  #@save
+    """The RNN encoder for sequence-to-sequence learning."""
+    def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
+                 dropout=0):
+        super().__init__()
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embed_size)
+        self.rnn = d2l.GRU(num_hiddens, num_layers, dropout)
+            
+    def call(self, X, *args):
+        # X shape: (batch_size, num_steps)
+        embs = self.embedding(d2l.transpose(X))
+        # embs shape: (num_steps, batch_size, embed_size)    
+        outputs, state = self.rnn(embs)
+        # outputs shape: (num_steps, batch_size, num_hiddens)
+        # state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, state
 ```
-
-Since an LSTM is used, the `state` list will contain both the hidden state and the memory cell with same shape (number of hidden layers, batch size, number of hidden units). However, if a GRU is used, the `state` list will contain only one element---the hidden state in the final time step with shape (number of hidden layers, batch size, number of hidden units).
 
 ```{.python .input}
-#@tab all
-len(state), state[0].shape, state[1].shape
+%%tab jax
+class Seq2SeqEncoder(d2l.Encoder):  #@save
+    """The RNN encoder for sequence-to-sequence learning."""
+    vocab_size: int
+    embed_size: int
+    num_hiddens: int
+    num_layers: int
+    dropout: float = 0
+
+    def setup(self):
+        self.embedding = nn.Embed(self.vocab_size, self.embed_size)
+        self.rnn = d2l.GRU(self.num_hiddens, self.num_layers, self.dropout)
+
+    def __call__(self, X, *args, training=False):
+        # X shape: (batch_size, num_steps)
+        embs = self.embedding(d2l.astype(d2l.transpose(X), d2l.int32))
+        # embs shape: (num_steps, batch_size, embed_size)
+        outputs, state = self.rnn(embs, training=training)
+        # outputs shape: (num_steps, batch_size, num_hiddens)
+        # state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, state
 ```
 
-## Decoder
+Let's use a concrete example
+to [**illustrate the above encoder implementation.**]
+Below, we instantiate a two-layer GRU encoder
+whose number of hidden units is 16.
+Given a minibatch of sequence inputs `X`
+(batch size $=4$; number of time steps $=9$),
+the hidden states of the final layer
+at all the time steps
+(`enc_outputs` returned by the encoder's recurrent layers)
+are a tensor of shape
+(number of time steps, batch size, number of hidden units).
+
+```{.python .input}
+%%tab all
+vocab_size, embed_size, num_hiddens, num_layers = 10, 8, 16, 2
+batch_size, num_steps = 4, 9
+encoder = Seq2SeqEncoder(vocab_size, embed_size, num_hiddens, num_layers)
+X = d2l.zeros((batch_size, num_steps))
+if tab.selected('pytorch', 'mxnet', 'tensorflow'):
+    enc_outputs, enc_state = encoder(X)
+if tab.selected('jax'):
+    (enc_outputs, enc_state), _ = encoder.init_with_output(d2l.get_key(), X)
+
+d2l.check_shape(enc_outputs, (num_steps, batch_size, num_hiddens))
+```
+
+Since we are using a GRU here,
+the shape of the multilayer hidden states
+at the final time step is
+(number of hidden layers, batch size, number of hidden units).
+
+```{.python .input}
+%%tab all
+if tab.selected('mxnet', 'pytorch', 'jax'):
+    d2l.check_shape(enc_state, (num_layers, batch_size, num_hiddens))
+if tab.selected('tensorflow'):
+    d2l.check_len(enc_state, num_layers)
+    d2l.check_shape(enc_state[0], (batch_size, num_hiddens))
+```
+
+## [**Decoder**]
 :label:`sec_seq2seq_decoder`
 
-As we just introduced, the context vector $\mathbf{c}$ encodes the information from the whole input sequence $x_1, \ldots, x_T$. Suppose that the given outputs in the training set are $y_1, \ldots, y_{T'}$. At each time step $t'$, the conditional probability of output $y_{t'}$ will depend on the previous output sequence $y_1, \ldots, y_{t'-1}$ and the context vector $\mathbf{c}$, i.e.,
+Given a target output sequence $y_1, y_2, \ldots, y_{T'}$
+for each time step $t'$
+(we use $t^\prime$ to differentiate from the input sequence time steps),
+the decoder assigns a predicted probability
+to each possible token occurring at step $y_{t'+1}$
+conditioned upon the previous tokens in the target
+$y_1, \ldots, y_{t'}$ 
+and the context variable 
+$\mathbf{c}$, i.e., $P(y_{t'+1} \mid y_1, \ldots, y_{t'}, \mathbf{c})$.
 
-$$P(y_{t'} \mid y_1, \ldots, y_{t'-1}, \mathbf{c}).$$
+To predict the subsequent token $t^\prime+1$ in the target sequence,
+the RNN decoder takes the previous step's target token $y_{t^\prime}$,
+the hidden RNN state from the previous time step $\mathbf{s}_{t^\prime-1}$,
+and the context variable $\mathbf{c}$ as its input,
+and transforms them into the hidden state 
+$\mathbf{s}_{t^\prime}$ at the current time step.
+We can use a function $g$ to express 
+the transformation of the decoder's hidden layer:
 
-Hence, we can use another RNN as the decoder. At time step $t'$, the decoder will update its hidden state $\mathbf{s}_{t'}$ using three inputs: the feature vector $\mathbf{y}_{t'-1}$ of $y_{t'-1}$, the context vector $\mathbf{c}$, and the hidden state of the last time step $\mathbf{s}_{t'-1}$. Let us denote the transformation of the RNN's hidden states within the decoder by a function $g$:
+$$\mathbf{s}_{t^\prime} = g(y_{t^\prime-1}, \mathbf{c}, \mathbf{s}_{t^\prime-1}).$$
+:eqlabel:`eq_seq2seq_s_t`
 
-$$\mathbf{s}_{t'} = g(\mathbf{y}_{t'-1}, \mathbf{c}, \mathbf{s}_{t'-1}).$$
+After obtaining the hidden state of the decoder,
+we can use an output layer and the softmax operation 
+to compute the predictive distribution
+$p(y_{t^{\prime}+1} \mid y_1, \ldots, y_{t^\prime}, \mathbf{c})$ 
+over the subsequent output token ${t^\prime+1}$.
 
-
-When implementing the decoder, we directly use the hidden state of the encoder in the final time step as the initial hidden state of the decoder. This requires that the encoder and decoder RNNs have the same numbers of layers and hidden units.
-The LSTM forward calculation of the decoder is similar to that of the encoder. The only difference is that we add a dense layer after the LSTM layers, where the hidden size is the vocabulary size. The dense layer will predict the confidence score for each word.
+Following :numref:`fig_seq2seq`,
+when implementing the decoder as follows,
+we directly use the hidden state at the final time step
+of the encoder
+to initialize the hidden state of the decoder.
+This requires that the RNN encoder and the RNN decoder 
+have the same number of layers and hidden units.
+To further incorporate the encoded input sequence information,
+the context variable is concatenated
+with the decoder input at all the time steps.
+To predict the probability distribution of the output token,
+we use a fully connected layer
+to transform the hidden state 
+at the final layer of the RNN decoder.
 
 ```{.python .input}
-#@save
+%%tab mxnet
 class Seq2SeqDecoder(d2l.Decoder):
+    """The RNN decoder for sequence to sequence learning."""
     def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
-                 dropout=0, **kwargs):
-        super(Seq2SeqDecoder, self).__init__(**kwargs)
+                 dropout=0):
+        super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.rnn = rnn.LSTM(num_hiddens, num_layers, dropout=dropout)
+        self.rnn = d2l.GRU(num_hiddens, num_layers, dropout)
         self.dense = nn.Dense(vocab_size, flatten=False)
-
-    def init_state(self, enc_outputs, *args):
-        return enc_outputs[1]
+        self.initialize(init.Xavier())
+            
+    def init_state(self, enc_all_outputs, *args):
+        return enc_all_outputs 
 
     def forward(self, X, state):
-        X = self.embedding(X).swapaxes(0, 1)
-        out, state = self.rnn(X, state)
-        # Make the batch to be the first dimension to simplify loss computation
-        out = self.dense(out).swapaxes(0, 1)
-        return out, state
+        # X shape: (batch_size, num_steps)
+        # embs shape: (num_steps, batch_size, embed_size)
+        embs = self.embedding(d2l.transpose(X))
+        enc_output, hidden_state = state
+        # context shape: (batch_size, num_hiddens)
+        context = enc_output[-1]
+        # Broadcast context to (num_steps, batch_size, num_hiddens)
+        context = np.tile(context, (embs.shape[0], 1, 1))
+        # Concat at the feature dimension
+        embs_and_context = d2l.concat((embs, context), -1)
+        outputs, hidden_state = self.rnn(embs_and_context, hidden_state)
+        outputs = d2l.swapaxes(self.dense(outputs), 0, 1)
+        # outputs shape: (batch_size, num_steps, vocab_size)
+        # hidden_state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, [enc_output, hidden_state]
 ```
 
 ```{.python .input}
-#@tab pytorch
-#@save
+%%tab pytorch
 class Seq2SeqDecoder(d2l.Decoder):
+    """The RNN decoder for sequence to sequence learning."""
     def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
-                 dropout=0, **kwargs):
-        super(Seq2SeqDecoder, self).__init__(**kwargs)
+                 dropout=0):
+        super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.rnn = nn.LSTM(embed_size, num_hiddens, num_layers, dropout=dropout)
-        self.dense = nn.Linear(num_hiddens, vocab_size)
-
-    def init_state(self, enc_outputs, *args):
-        return enc_outputs[1]
+        self.rnn = d2l.GRU(embed_size+num_hiddens, num_hiddens,
+                           num_layers, dropout)
+        self.dense = nn.LazyLinear(vocab_size)
+        self.apply(init_seq2seq)
+            
+    def init_state(self, enc_all_outputs, *args):
+        return enc_all_outputs
 
     def forward(self, X, state):
-        X = self.embedding(X).permute(1, 0, 2)
-        out, state = self.rnn(X, state)
-        # Make the batch to be the first dimension to simplify loss computation
-        out = self.dense(out).permute(1, 0, 2)
-        return out, state
-```
-
-We create a decoder with the same hyperparameters as the encoder. As we can see, the output shape is changed to (batch size, the sequence length, vocabulary size).
-
-```{.python .input}
-decoder = Seq2SeqDecoder(vocab_size=10, embed_size=8,
-                         num_hiddens=16, num_layers=2)
-decoder.initialize()
-state = decoder.init_state(encoder(X))
-out, state = decoder(X, state)
-out.shape, len(state), state[0].shape, state[1].shape
-```
-
-```{.python .input}
-#@tab pytorch
-decoder = Seq2SeqDecoder(vocab_size=10, embed_size=8,
-                         num_hiddens=16, num_layers=2)
-decoder.eval()
-state = decoder.init_state(encoder(X))
-out, state = decoder(X, state)
-out.shape, len(state), state[0].shape, state[1].shape
-```
-
-## The Loss Function
-
-For each time step, the decoder outputs a vocabulary-size confidence score vector to predict words. Similar to language modeling, we can apply softmax to obtain the probabilities and then use cross-entropy loss to calculate the loss. Note that we padded the target sentences to make them have the same length, but we do not need to compute the loss on the padding symbols.
-
-To implement the loss function that filters out some entries, we will use an operator called `SequenceMask`. It can specify to mask the first dimension (`axis=0`) or the second one (`axis=1`). If the second one is chosen, given a valid length vector `len` and 2-dim input `X`, this operator sets `X[i, len[i]:] = 0` for all $i$'s.
-
-```{.python .input}
-X = np.array([[1, 2, 3], [4, 5, 6]])
-npx.sequence_mask(X, np.array([1, 2]), True, axis=1)
+        # X shape: (batch_size, num_steps)
+        # embs shape: (num_steps, batch_size, embed_size)
+        embs = self.embedding(d2l.astype(d2l.transpose(X), d2l.int32))
+        enc_output, hidden_state = state
+        # context shape: (batch_size, num_hiddens)
+        context = enc_output[-1]
+        # Broadcast context to (num_steps, batch_size, num_hiddens)
+        context = context.repeat(embs.shape[0], 1, 1)
+        # Concat at the feature dimension
+        embs_and_context = d2l.concat((embs, context), -1)
+        outputs, hidden_state = self.rnn(embs_and_context, hidden_state)
+        outputs = d2l.swapaxes(self.dense(outputs), 0, 1)
+        # outputs shape: (batch_size, num_steps, vocab_size)
+        # hidden_state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, [enc_output, hidden_state]
 ```
 
 ```{.python .input}
-#@tab pytorch
-#@save
-def sequence_mask(X, valid_len, value=0):
-    maxlen = X.size(1)
-    mask = torch.arange((maxlen), dtype=torch.float32,
-                        device=X.device)[None, :] < valid_len[:, None]
-    X[~mask] = value
-    return X
+%%tab tensorflow
+class Seq2SeqDecoder(d2l.Decoder):
+    """The RNN decoder for sequence to sequence learning."""
+    def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
+                 dropout=0):
+        super().__init__()
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embed_size)
+        self.rnn = d2l.GRU(num_hiddens, num_layers, dropout)
+        self.dense = tf.keras.layers.Dense(vocab_size)
+            
+    def init_state(self, enc_all_outputs, *args):
+        return enc_all_outputs
 
-X = torch.tensor([[1, 2, 3], [4, 5, 6]])
-sequence_mask(X, torch.tensor([1, 2]))
-```
-
-Apply to $n$-dim tensor $X$, it sets `X[i, len[i]:, :, ..., :] = 0`. In addition, we can specify the filling value such as $-1$ as shown below.
-
-```{.python .input}
-X = d2l.ones((2, 3, 4))
-npx.sequence_mask(X, np.array([1, 2]), True, value=-1, axis=1)
-```
-
-```{.python .input}
-#@tab pytorch
-X = d2l.ones(2, 3, 4)
-sequence_mask(X, torch.tensor([1, 2]), value=-1)
-```
-
-Now we can implement the masked version of the softmax cross-entropy loss. Note that each Gluon loss function allows to specify per-example weights, in default they are 1s. Then we can just use a zero weight for each example we would like to remove. So our customized loss function accepts an additional `valid_len` argument to ignore some failing elements in each sequence.
-
-```{.python .input}
-#@save
-class MaskedSoftmaxCELoss(gluon.loss.SoftmaxCELoss):
-    # `pred` shape: (`batch_size`, `seq_len`, `vocab_size`)
-    # `label` shape: (`batch_size`, `seq_len`)
-    # `valid_len` shape: (`batch_size`, )
-    def forward(self, pred, label, valid_len):
-        # weights shape: (batch_size, seq_len, 1)
-        weights = np.expand_dims(np.ones_like(label), axis=-1)
-        weights = npx.sequence_mask(weights, valid_len, True, axis=1)
-        return super(MaskedSoftmaxCELoss, self).forward(pred, label, weights)
+    def call(self, X, state):
+        # X shape: (batch_size, num_steps)
+        # embs shape: (num_steps, batch_size, embed_size)
+        embs = self.embedding(d2l.transpose(X))
+        enc_output, hidden_state = state
+        # context shape: (batch_size, num_hiddens)
+        context = enc_output[-1]
+        # Broadcast context to (num_steps, batch_size, num_hiddens)
+        context = tf.tile(tf.expand_dims(context, 0), (embs.shape[0], 1, 1))
+        # Concat at the feature dimension
+        embs_and_context = d2l.concat((embs, context), -1)
+        outputs, hidden_state = self.rnn(embs_and_context, hidden_state)
+        outputs = d2l.transpose(self.dense(outputs), (1, 0, 2))
+        # outputs shape: (batch_size, num_steps, vocab_size)
+        # hidden_state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, [enc_output, hidden_state]
 ```
 
 ```{.python .input}
-#@tab pytorch
-#@save
-class MaskedSoftmaxCELoss(nn.CrossEntropyLoss):
-    # pred shape: (batch_size, seq_len, vocab_size)
-    # label shape: (batch_size, seq_len)
-    # valid_len shape: (batch_size, )
-    def forward(self, pred, label, valid_len):
-        weights = torch.ones_like(label)
-        weights = sequence_mask(weights, valid_len)
-        self.reduction='none'
-        unweighted_loss = super(MaskedSoftmaxCELoss, self).forward(pred.permute(0,2,1), label)
-        weighted_loss = (unweighted_loss*weights).mean(dim=1)
-        return weighted_loss
+%%tab jax
+class Seq2SeqDecoder(d2l.Decoder):
+    """The RNN decoder for sequence to sequence learning."""
+    vocab_size: int
+    embed_size: int
+    num_hiddens: int
+    num_layers: int
+    dropout: float = 0
+
+    def setup(self):
+        self.embedding = nn.Embed(self.vocab_size, self.embed_size)
+        self.rnn = d2l.GRU(self.num_hiddens, self.num_layers, self.dropout)
+        self.dense = nn.Dense(self.vocab_size)
+
+    def init_state(self, enc_all_outputs, *args):
+        return enc_all_outputs
+
+    def __call__(self, X, state, training=False):
+        # X shape: (batch_size, num_steps)
+        # embs shape: (num_steps, batch_size, embed_size)
+        embs = self.embedding(d2l.astype(d2l.transpose(X), d2l.int32))
+        enc_output, hidden_state = state
+        # context shape: (batch_size, num_hiddens)
+        context = enc_output[-1]
+        # Broadcast context to (num_steps, batch_size, num_hiddens)
+        context = jnp.tile(context, (embs.shape[0], 1, 1))
+        # Concat at the feature dimension
+        embs_and_context = d2l.concat((embs, context), -1)
+        outputs, hidden_state = self.rnn(embs_and_context, hidden_state,
+                                         training=training)
+        outputs = d2l.swapaxes(self.dense(outputs), 0, 1)
+        # outputs shape: (batch_size, num_steps, vocab_size)
+        # hidden_state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, [enc_output, hidden_state]
 ```
 
-For a sanity check, we create identical three sequences, keep 4 elements for the first sequence, 2 elements for the second sequence, and none for the last one. Then the first example loss should be 2 times larger than the second one, and the last loss should be 0.
+To [**illustrate the implemented decoder**],
+below we instantiate it with the same hyperparameters from the aforementioned encoder.
+As we can see, the output shape of the decoder becomes (batch size, number of time steps, vocabulary size),
+where the final dimension of the tensor stores the predicted token distribution.
 
 ```{.python .input}
-loss = MaskedSoftmaxCELoss()
-loss(d2l.ones((3, 4, 10)), d2l.ones((3, 4)), np.array([4, 2, 0]))
+%%tab all
+decoder = Seq2SeqDecoder(vocab_size, embed_size, num_hiddens, num_layers)
+if tab.selected('mxnet', 'pytorch', 'tensorflow'):
+    state = decoder.init_state(encoder(X))
+    dec_outputs, state = decoder(X, state)
+if tab.selected('jax'):
+    state = decoder.init_state(encoder.init_with_output(d2l.get_key(), X)[0])
+    (dec_outputs, state), _ = decoder.init_with_output(d2l.get_key(), X,
+                                                       state)
+
+
+d2l.check_shape(dec_outputs, (batch_size, num_steps, vocab_size))
+if tab.selected('mxnet', 'pytorch', 'jax'):
+    d2l.check_shape(state[1], (num_layers, batch_size, num_hiddens))
+if tab.selected('tensorflow'):
+    d2l.check_len(state[1], num_layers)
+    d2l.check_shape(state[1][0], (batch_size, num_hiddens))
+```
+
+The layers in the above RNN encoder--decoder model 
+are summarized in :numref:`fig_seq2seq_details`.
+
+![Layers in an RNN encoder--decoder model.](../img/seq2seq-details.svg)
+:label:`fig_seq2seq_details`
+
+
+
+## Encoder--Decoder for Sequence-to-Sequence Learning
+
+
+Putting it all together in code yields the following:
+
+```{.python .input}
+%%tab pytorch, tensorflow, mxnet
+class Seq2Seq(d2l.EncoderDecoder):  #@save
+    """The RNN encoder--decoder for sequence to sequence learning."""
+    def __init__(self, encoder, decoder, tgt_pad, lr):
+        super().__init__(encoder, decoder)
+        self.save_hyperparameters()
+        
+    def validation_step(self, batch):
+        Y_hat = self(*batch[:-1])
+        self.plot('loss', self.loss(Y_hat, batch[-1]), train=False)
+        
+    def configure_optimizers(self):
+        # Adam optimizer is used here
+        if tab.selected('mxnet'):
+            return gluon.Trainer(self.parameters(), 'adam',
+                                 {'learning_rate': self.lr})
+        if tab.selected('pytorch'):
+            return torch.optim.Adam(self.parameters(), lr=self.lr)
+        if tab.selected('tensorflow'):
+            return tf.keras.optimizers.Adam(learning_rate=self.lr)
 ```
 
 ```{.python .input}
-#@tab pytorch
-loss = MaskedSoftmaxCELoss()
-loss(d2l.ones(3, 4, 10), d2l.ones((3, 4), dtype=torch.long), torch.tensor([4, 2, 0]))
+%%tab jax
+class Seq2Seq(d2l.EncoderDecoder):  #@save
+    """The RNN encoder--decoder for sequence to sequence learning."""
+    encoder: nn.Module
+    decoder: nn.Module
+    tgt_pad: int
+    lr: float
+
+    def validation_step(self, params, batch, state):
+        l, _ = self.loss(params, batch[:-1], batch[-1], state)
+        self.plot('loss', l, train=False)
+
+    def configure_optimizers(self):
+        # Adam optimizer is used here
+        return optax.adam(learning_rate=self.lr)
 ```
 
-## Training
+## Loss Function with Masking
+
+At each time step, the decoder predicts 
+a probability distribution for the output tokens.
+As with language modeling, 
+we can apply softmax 
+to obtain the distribution
+and calculate the cross-entropy loss for optimization.
+Recall from :numref:`sec_machine_translation`
+that the special padding tokens
+are appended to the end of sequences
+and so sequences of varying lengths
+can be efficiently loaded
+in minibatches of the same shape.
+However, prediction of padding tokens
+should be excluded from loss calculations.
+To this end, we can 
+[**mask irrelevant entries with zero values**]
+so that multiplication 
+of any irrelevant prediction
+with zero equates to zero.
+
+```{.python .input}
+%%tab pytorch, mxnet, tensorflow
+@d2l.add_to_class(Seq2Seq)
+def loss(self, Y_hat, Y):
+    l = super(Seq2Seq, self).loss(Y_hat, Y, averaged=False)
+    mask = d2l.astype(d2l.reshape(Y, -1) != self.tgt_pad, d2l.float32)
+    return d2l.reduce_sum(l * mask) / d2l.reduce_sum(mask)
+```
+
+```{.python .input}
+%%tab jax
+@d2l.add_to_class(Seq2Seq)
+@partial(jax.jit, static_argnums=(0, 5))
+def loss(self, params, X, Y, state, averaged=False):
+    Y_hat = state.apply_fn({'params': params}, *X,
+                           rngs={'dropout': state.dropout_rng})
+    Y_hat = d2l.reshape(Y_hat, (-1, Y_hat.shape[-1]))
+    Y = d2l.reshape(Y, (-1,))
+    fn = optax.softmax_cross_entropy_with_integer_labels
+    l = fn(Y_hat, Y)
+    mask = d2l.astype(d2l.reshape(Y, -1) != self.tgt_pad, d2l.float32)
+    return d2l.reduce_sum(l * mask) / d2l.reduce_sum(mask), {}
+```
+
+## [**Training**]
 :label:`sec_seq2seq_training`
 
-During training, if the target sequence has length $n$, we feed the first $n-1$ tokens into the decoder as inputs, and the last $n-1$ tokens are used as ground truth label.
+Now we can [**create and train an RNN encoder--decoder model**]
+for sequence-to-sequence learning on the machine translation dataset.
 
 ```{.python .input}
-#@save
-def train_s2s_ch9(model, data_iter, lr, num_epochs, device):
-    model.initialize(init.Xavier(), force_reinit=True, ctx=device)
-    trainer = gluon.Trainer(model.collect_params(),
-                            'adam', {'learning_rate': lr})
-    loss = MaskedSoftmaxCELoss()
-    animator = d2l.Animator(xlabel='epoch', ylabel='loss',
-                            xlim=[1, num_epochs], ylim=[0, 0.25])
-    for epoch in range(1, num_epochs + 1):
-        timer = d2l.Timer()
-        metric = d2l.Accumulator(2)  # loss_sum, num_tokens
-        for batch in data_iter:
-            X, X_vlen, Y, Y_vlen = [x.as_in_ctx(device) for x in batch]
-            Y_input, Y_label, Y_vlen = Y[:, :-1], Y[:, 1:], Y_vlen-1
-            with autograd.record():
-                Y_hat, _ = model(X, Y_input, X_vlen, Y_vlen)
-                l = loss(Y_hat, Y_label, Y_vlen)
-            l.backward()
-            d2l.grad_clipping(model, 1)
-            num_tokens = Y_vlen.sum()
-            trainer.step(num_tokens)
-            metric.add(l.sum(), num_tokens)
-        if epoch % 10 == 0:
-            animator.add(epoch, (metric[0]/metric[1],))
-    print(f'loss {metric[0] / metric[1]:.3f}, {metric[1] / timer.stop():.1f} '
-          f'tokens/sec on {str(device)}')
+%%tab all
+data = d2l.MTFraEng(batch_size=128) 
+embed_size, num_hiddens, num_layers, dropout = 256, 256, 2, 0.2
+if tab.selected('mxnet', 'pytorch', 'jax'):
+    encoder = Seq2SeqEncoder(
+        len(data.src_vocab), embed_size, num_hiddens, num_layers, dropout)
+    decoder = Seq2SeqDecoder(
+        len(data.tgt_vocab), embed_size, num_hiddens, num_layers, dropout)
+if tab.selected('mxnet', 'pytorch'):
+    model = Seq2Seq(encoder, decoder, tgt_pad=data.tgt_vocab['<pad>'],
+                    lr=0.005)
+if tab.selected('jax'):
+    model = Seq2Seq(encoder, decoder, tgt_pad=data.tgt_vocab['<pad>'],
+                    lr=0.005, training=True)
+if tab.selected('mxnet', 'pytorch', 'jax'):
+    trainer = d2l.Trainer(max_epochs=30, gradient_clip_val=1, num_gpus=1)
+if tab.selected('tensorflow'):
+    with d2l.try_gpu():
+        encoder = Seq2SeqEncoder(
+            len(data.src_vocab), embed_size, num_hiddens, num_layers, dropout)
+        decoder = Seq2SeqDecoder(
+            len(data.tgt_vocab), embed_size, num_hiddens, num_layers, dropout)
+        model = Seq2Seq(encoder, decoder, tgt_pad=data.tgt_vocab['<pad>'],
+                        lr=0.005)
+    trainer = d2l.Trainer(max_epochs=30, gradient_clip_val=1)
+trainer.fit(model, data)
 ```
 
-```{.python .input}
-#@tab pytorch
-#@save
-def train_s2s_ch9(model, data_iter, lr, num_epochs, device):
-    def xavier_init_weights(m):
-        if type(m) == nn.Linear:
-            torch.nn.init.xavier_uniform_(m.weight)
-        if type(m) == nn.LSTM:
-            for param in m._flat_weights_names:
-                if "weight" in param:
-                    torch.nn.init.xavier_uniform_(m._parameters[param])
-    model.apply(xavier_init_weights)
-    model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss = MaskedSoftmaxCELoss()
-    model.train()
-    animator = d2l.Animator(xlabel='epoch', ylabel='loss',
-                            xlim=[1, num_epochs], ylim=[0, 0.25])
-    for epoch in range(1, num_epochs + 1):
-        timer = d2l.Timer()
-        metric = d2l.Accumulator(2)  # loss_sum, num_tokens
-        for batch in data_iter:
-            X, X_vlen, Y, Y_vlen = [x.to(device) for x in batch]
-            Y_input, Y_label, Y_vlen = Y[:, :-1], Y[:, 1:], Y_vlen-1
-            Y_hat, _ = model(X, Y_input, X_vlen, Y_vlen)
-            l = loss(Y_hat, Y_label, Y_vlen)
-            l.sum().backward() # Making the loss scalar for backward()
-            d2l.grad_clipping(model, 1)
-            num_tokens = Y_vlen.sum()
-            optimizer.step()
-            with torch.no_grad():
-                metric.add(l.sum(), num_tokens)
-        if epoch % 10 == 0:
-            animator.add(epoch, (metric[0]/metric[1],))
-    print(f'loss {metric[0] / metric[1]:.3f}, {metric[1] / timer.stop():.1f} '
-          f'tokens/sec on {str(device)}')
-```
+## [**Prediction**]
 
-Next, we create a model instance and set hyperparameters. Then, we can train the model.
+To predict the output sequence
+at each step, 
+the predicted token from the previous
+time step is fed into the decoder as an input.
+One simple strategy is to sample whichever token
+that has been assigned by the decoder the highest probability
+when predicting at each step.
+As in training, at the initial time step
+the beginning-of-sequence ("&lt;bos&gt;") token
+is fed into the decoder.
+This prediction process
+is illustrated in :numref:`fig_seq2seq_predict`.
+When the end-of-sequence ("&lt;eos&gt;") token is predicted,
+the prediction of the output sequence is complete.
 
-```{.python .input}
-embed_size, num_hiddens, num_layers, dropout = 32, 32, 2, 0.0
-batch_size, num_steps = 64, 10
-lr, num_epochs, device = 0.005, 300, d2l.try_gpu()
 
-src_vocab, tgt_vocab, train_iter = d2l.load_data_nmt(batch_size, num_steps)
-encoder = Seq2SeqEncoder(
-    len(src_vocab), embed_size, num_hiddens, num_layers, dropout)
-decoder = Seq2SeqDecoder(
-    len(tgt_vocab), embed_size, num_hiddens, num_layers, dropout)
-model = d2l.EncoderDecoder(encoder, decoder)
-train_s2s_ch9(model, train_iter, lr, num_epochs, device)
-```
-
-```{.python .input}
-#@tab pytorch
-embed_size, num_hiddens, num_layers, dropout = 32, 32, 2, 0.0
-batch_size, num_steps = 64, 10
-lr, num_epochs, device = 0.005, 300, d2l.try_gpu()
-
-src_vocab, tgt_vocab, train_iter = d2l.load_data_nmt(batch_size, num_steps)
-encoder = Seq2SeqEncoder(
-    len(src_vocab), embed_size, num_hiddens, num_layers, dropout)
-decoder = Seq2SeqDecoder(
-    len(tgt_vocab), embed_size, num_hiddens, num_layers, dropout)
-model = d2l.EncoderDecoder(encoder, decoder)
-train_s2s_ch9(model, train_iter, lr, num_epochs, device)
-```
-
-## Predicting
-
-Here we implement the simplest method, greedy search, to generate an output
-sequence. As illustrated in :numref:`fig_seq2seq_predict`, during predicting, we feed the same "&lt;bos&gt;" token to the decoder as training at time step 0. But the input token for a later time step is the predicted token from the previous time step.
-
-![Sequence to sequence model predicting with greedy search](../img/seq2seq_predict.svg)
+![Predicting the output sequence token by token using an RNN encoder--decoder.](../img/seq2seq-predict.svg)
 :label:`fig_seq2seq_predict`
 
+In the next section, we will introduce 
+more sophisticated strategies 
+based on beam search (:numref:`sec_beam-search`).
+
 ```{.python .input}
-#@save
-def predict_s2s_ch9(model, src_sentence, src_vocab, tgt_vocab, num_steps,
-                    device):
-    src_tokens = src_vocab[src_sentence.lower().split(' ')]
-    enc_valid_len = np.array([len(src_tokens)], ctx=device)
-    src_tokens = d2l.truncate_pad(src_tokens, num_steps, src_vocab['<pad>'])
-    enc_X = np.array(src_tokens, ctx=device)
-    # Add the  batch size dimension
-    enc_outputs = model.encoder(np.expand_dims(enc_X, axis=0),
-                                enc_valid_len)
-    dec_state = model.decoder.init_state(enc_outputs, enc_valid_len)
-    dec_X = np.expand_dims(np.array([tgt_vocab['<bos>']], ctx=device), axis=0)
-    predict_tokens = []
+%%tab pytorch, mxnet, tensorflow
+@d2l.add_to_class(d2l.EncoderDecoder)  #@save
+def predict_step(self, batch, device, num_steps,
+                 save_attention_weights=False):
+    if tab.selected('mxnet', 'pytorch'):
+        batch = [d2l.to(a, device) for a in batch]
+    src, tgt, src_valid_len, _ = batch
+    if tab.selected('mxnet', 'pytorch'):
+        enc_all_outputs = self.encoder(src, src_valid_len)
+    if tab.selected('tensorflow'):
+        enc_all_outputs = self.encoder(src, src_valid_len, training=False)
+    dec_state = self.decoder.init_state(enc_all_outputs, src_valid_len)
+    outputs, attention_weights = [d2l.expand_dims(tgt[:, 0], 1), ], []
     for _ in range(num_steps):
-        Y, dec_state = model.decoder(dec_X, dec_state)
-        # The token with highest score is used as the next time step input
-        dec_X = Y.argmax(axis=2)
-        py = dec_X.squeeze(axis=0).astype('int32').item()
-        if py == tgt_vocab['<eos>']:
-            break
-        predict_tokens.append(py)
-    return ' '.join(tgt_vocab.to_tokens(predict_tokens))
+        if tab.selected('mxnet', 'pytorch'):
+            Y, dec_state = self.decoder(outputs[-1], dec_state)
+        if tab.selected('tensorflow'):
+            Y, dec_state = self.decoder(outputs[-1], dec_state, training=False)
+        outputs.append(d2l.argmax(Y, 2))
+        # Save attention weights (to be covered later)
+        if save_attention_weights:
+            attention_weights.append(self.decoder.attention_weights)
+    return d2l.concat(outputs[1:], 1), attention_weights
 ```
 
 ```{.python .input}
-#@tab pytorch
-#@save
-def predict_s2s_ch9(model, src_sentence, src_vocab, tgt_vocab, num_steps,
-                    device):
-    src_tokens = src_vocab[src_sentence.lower().split(' ')]
-    enc_valid_len = torch.tensor([len(src_tokens)], device=device)
-    src_tokens = d2l.truncate_pad(src_tokens, num_steps, src_vocab['<pad>'])
-    enc_X = torch.tensor(src_tokens, dtype=torch.long, device=device)
-    # Add the  batch size dimension
-    enc_outputs = model.encoder(torch.unsqueeze(enc_X, dim=0),
-                                enc_valid_len)
-    dec_state = model.decoder.init_state(enc_outputs, enc_valid_len)
-    dec_X = torch.unsqueeze(torch.tensor([tgt_vocab['<bos>']], dtype=torch.long, device=device), dim=0)
-    predict_tokens = []
+%%tab jax
+@d2l.add_to_class(d2l.EncoderDecoder)  #@save
+def predict_step(self, params, batch, num_steps,
+                 save_attention_weights=False):
+    src, tgt, src_valid_len, _ = batch
+    enc_all_outputs, inter_enc_vars = self.encoder.apply(
+        {'params': params['encoder']}, src, src_valid_len, training=False,
+        mutable='intermediates')
+    # Save encoder attention weights if inter_enc_vars containing encoder
+    # attention weights is not empty. (to be covered later)
+    enc_attention_weights = []
+    if bool(inter_enc_vars) and save_attention_weights:
+        # Encoder Attention Weights saved in the intermediates collection
+        enc_attention_weights = inter_enc_vars[
+            'intermediates']['enc_attention_weights'][0]
+
+    dec_state = self.decoder.init_state(enc_all_outputs, src_valid_len)
+    outputs, attention_weights = [d2l.expand_dims(tgt[:,0], 1), ], []
     for _ in range(num_steps):
-        Y, dec_state = model.decoder(dec_X, dec_state)
-        # The token with highest score is used as the next time step input
-        dec_X = Y.argmax(dim=2)
-        py = dec_X.squeeze(dim=0).type(torch.int32).item()
-        if py == tgt_vocab['<eos>']:
-            break
-        predict_tokens.append(py)
-    return ' '.join(tgt_vocab.to_tokens(predict_tokens))
+        (Y, dec_state), inter_dec_vars = self.decoder.apply(
+            {'params': params['decoder']}, outputs[-1], dec_state,
+            training=False, mutable='intermediates')
+        outputs.append(d2l.argmax(Y, 2))
+        # Save attention weights (to be covered later)
+        if save_attention_weights:
+            # Decoder Attention Weights saved in the intermediates collection
+            dec_attention_weights = inter_dec_vars[
+                'intermediates']['dec_attention_weights'][0]
+            attention_weights.append(dec_attention_weights)
+    return d2l.concat(outputs[1:], 1), (attention_weights,
+                                        enc_attention_weights)
 ```
 
-Try several examples:
+## Evaluation of Predicted Sequences
+
+We can evaluate a predicted sequence
+by comparing it with the
+target sequence (the ground truth).
+But what precisely is the appropriate measure 
+for comparing similarity between two sequences?
+
+
+Bilingual Evaluation Understudy (BLEU),
+though originally proposed for evaluating
+machine translation results :cite:`Papineni.Roukos.Ward.ea.2002`,
+has been extensively used in measuring
+the quality of output sequences for different applications.
+In principle, for any $n$-gram (:numref:`subsec_markov-models-and-n-grams`) in the predicted sequence,
+BLEU evaluates whether this $n$-gram appears
+in the target sequence.
+
+Denote by $p_n$ the precision of an $n$-gram,
+defined as the ratio 
+of the number of matched $n$-grams in
+the predicted and target sequences
+to the number of $n$-grams in the predicted sequence.
+To explain, given a target sequence $A$, $B$, $C$, $D$, $E$, $F$,
+and a predicted sequence $A$, $B$, $B$, $C$, $D$,
+we have $p_1 = 4/5$,  $p_2 = 3/4$, $p_3 = 1/3$, and $p_4 = 0$.
+Now let $\textrm{len}_{\textrm{label}}$ and $\textrm{len}_{\textrm{pred}}$
+be the numbers of tokens in the target sequence 
+and the predicted sequence, respectively.
+Then, BLEU is defined as
+
+$$ \exp\left(\min\left(0, 1 - \frac{\textrm{len}_{\textrm{label}}}{\textrm{len}_{\textrm{pred}}}\right)\right) \prod_{n=1}^k p_n^{1/2^n},$$
+:eqlabel:`eq_bleu`
+
+where $k$ is the longest $n$-gram for matching.
+
+Based on the definition of BLEU in :eqref:`eq_bleu`,
+whenever the predicted sequence is the same as the target sequence, BLEU is 1.
+Moreover,
+since matching longer $n$-grams is more difficult,
+BLEU assigns a greater weight
+when a longer $n$-gram has high precision.
+Specifically, when $p_n$ is fixed,
+$p_n^{1/2^n}$ increases as $n$ grows (the original paper uses $p_n^{1/n}$).
+Furthermore,
+since
+predicting shorter sequences
+tends to yield a higher $p_n$ value,
+the coefficient before the multiplication term in :eqref:`eq_bleu`
+penalizes shorter predicted sequences.
+For example, when $k=2$,
+given the target sequence $A$, $B$, $C$, $D$, $E$, $F$ and the predicted sequence $A$, $B$,
+although $p_1 = p_2 = 1$, the penalty factor $\exp(1-6/2) \approx 0.14$ lowers the BLEU.
+
+We [**implement the BLEU measure**] as follows.
 
 ```{.python .input}
-#@tab mxnet, pytorch
-for sentence in ['Go .', 'Wow !', "I'm OK .", 'I won !']:
-    print(sentence + ' => ' + predict_s2s_ch9(
-        model, sentence, src_vocab, tgt_vocab, num_steps, device))
+%%tab all
+def bleu(pred_seq, label_seq, k):  #@save
+    """Compute the BLEU."""
+    pred_tokens, label_tokens = pred_seq.split(' '), label_seq.split(' ')
+    len_pred, len_label = len(pred_tokens), len(label_tokens)
+    score = math.exp(min(0, 1 - len_label / len_pred))
+    for n in range(1, min(k, len_pred) + 1):
+        num_matches, label_subs = 0, collections.defaultdict(int)
+        for i in range(len_label - n + 1):
+            label_subs[' '.join(label_tokens[i: i + n])] += 1
+        for i in range(len_pred - n + 1):
+            if label_subs[' '.join(pred_tokens[i: i + n])] > 0:
+                num_matches += 1
+                label_subs[' '.join(pred_tokens[i: i + n])] -= 1
+        score *= math.pow(num_matches / (len_pred - n + 1), math.pow(0.5, n))
+    return score
+```
+
+In the end,
+we use the trained RNN encoder--decoder
+to [**translate a few English sentences into French**]
+and compute the BLEU of the results.
+
+```{.python .input}
+%%tab all
+engs = ['go .', 'i lost .', 'he\'s calm .', 'i\'m home .']
+fras = ['va !', 'j\'ai perdu .', 'il est calme .', 'je suis chez moi .']
+if tab.selected('pytorch', 'mxnet', 'tensorflow'):
+    preds, _ = model.predict_step(
+        data.build(engs, fras), d2l.try_gpu(), data.num_steps)
+if tab.selected('jax'):
+    preds, _ = model.predict_step(trainer.state.params, data.build(engs, fras),
+                                  data.num_steps)
+for en, fr, p in zip(engs, fras, preds):
+    translation = []
+    for token in data.tgt_vocab.to_tokens(p):
+        if token == '<eos>':
+            break
+        translation.append(token)        
+    print(f'{en} => {translation}, bleu,'
+          f'{bleu(" ".join(translation), fr, k=2):.3f}')
 ```
 
 ## Summary
 
-* The sequence to sequence (seq2seq) model is based on the encoder-decoder architecture to generate a sequence output from a sequence input.
-* We use multiple LSTM layers for both the encoder and the decoder.
+Following the design of the encoder--decoder architecture, we can use two RNNs to design a model for sequence-to-sequence learning.
+In encoder--decoder training, the teacher forcing approach feeds original output sequences (in contrast to predictions) into the decoder.
+When implementing the encoder and the decoder, we can use multilayer RNNs.
+We can use masks to filter out irrelevant computations, such as when calculating the loss.
+For evaluating output sequences,
+BLEU is a popular measure that matches $n$-grams between the predicted sequence and the target sequence.
 
 
 ## Exercises
 
-1. Can you think of other use cases of seq2seq besides neural machine translation?
-1. What if the input sequence in the example of this section is longer?
-1. If we do not use the `SequenceMask` in the loss function, what may happen?
+1. Can you adjust the hyperparameters to improve the translation results?
+1. Rerun the experiment without using masks in the loss calculation. What results do you observe? Why?
+1. If the encoder and the decoder differ in the number of layers or the number of hidden units, how can we initialize the hidden state of the decoder?
+1. In training, replace teacher forcing with feeding the prediction at the previous time step into the decoder. How does this influence the performance?
+1. Rerun the experiment by replacing GRU with LSTM.
+1. Are there any other ways to design the output layer of the decoder?
 
 :begin_tab:`mxnet`
 [Discussions](https://discuss.d2l.ai/t/345)
 :end_tab:
+
+:begin_tab:`pytorch`
+[Discussions](https://discuss.d2l.ai/t/1062)
+:end_tab:
+
+:begin_tab:`tensorflow`
+[Discussions](https://discuss.d2l.ai/t/3865)
+:end_tab:
+
+:begin_tab:`jax`
+[Discussions](https://discuss.d2l.ai/t/18022)
+:end_tab:
+

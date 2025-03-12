@@ -1,21 +1,22 @@
+```{.python .input}
+%load_ext d2lbook.tab
+tab.interact_select(['mxnet', 'pytorch', 'tensorflow', 'jax'])
+```
+
 # Pooling
 :label:`sec_pooling`
 
-
-Often, as we process images, we want to gradually
-reduce the spatial resolution of our hidden representations,
-aggregating information so that
-the higher up we go in the network,
-the larger the receptive field (in the input)
-to which each hidden node is sensitive.
-
-Often our ultimate task asks some global question about the image,
-e.g., *does it contain a cat?*
-So typically the units of our final layer should be sensitive
-to the entire input.
+In many cases our ultimate task asks some global question about the image,
+e.g., *does it contain a cat?* Consequently, the units of our final layer 
+should be sensitive to the entire input.
 By gradually aggregating information, yielding coarser and coarser maps,
 we accomplish this goal of ultimately learning a global representation,
 while keeping all of the advantages of convolutional layers at the intermediate layers of processing.
+The deeper we go in the network,
+the larger the receptive field (relative to the input)
+to which each hidden node is sensitive. Reducing spatial resolution 
+accelerates this process, 
+since the convolution kernels cover a larger effective area. 
 
 Moreover, when detecting lower-level features, such as edges
 (as discussed in :numref:`sec_conv_layer`),
@@ -37,6 +38,29 @@ which serve the dual purposes of
 mitigating the sensitivity of convolutional layers to location
 and of spatially downsampling representations.
 
+```{.python .input}
+%%tab mxnet
+from d2l import mxnet as d2l
+from mxnet import np, npx
+from mxnet.gluon import nn
+npx.set_np()
+```
+
+```{.python .input}
+%%tab pytorch
+from d2l import torch as d2l
+import torch
+from torch import nn
+```
+
+```{.python .input}
+%%tab jax
+from d2l import jax as d2l
+from flax import linen as nn
+import jax
+from jax import numpy as jnp
+```
+
 ## Maximum Pooling and Average Pooling
 
 Like convolutional layers, *pooling* operators
@@ -50,21 +74,30 @@ the pooling layer contains no parameters (there is no *kernel*).
 Instead, pooling operators are deterministic,
 typically calculating either the maximum or the average value
 of the elements in the pooling window.
-These operations are called *maximum pooling* (*max pooling* for short)
+These operations are called *maximum pooling* (*max-pooling* for short)
 and *average pooling*, respectively.
 
+*Average pooling* is essentially as old as CNNs. The idea is akin to 
+downsampling an image. Rather than just taking the value of every second (or third) 
+pixel for the lower resolution image, we can average over adjacent pixels to obtain 
+an image with better signal-to-noise ratio since we are combining the information 
+from multiple adjacent pixels. *Max-pooling* was introduced in 
+:citet:`Riesenhuber.Poggio.1999` in the context of cognitive neuroscience to describe 
+how information aggregation might be aggregated hierarchically for the purpose 
+of object recognition; there already was an earlier version in speech recognition :cite:`Yamaguchi.Sakamoto.Akabane.ea.1990`. In almost all cases, max-pooling, as it is also referred to, 
+is preferable to average pooling. 
 
 In both cases, as with the cross-correlation operator,
 we can think of the pooling window
-as starting from the top left of the input tensor
-and sliding across the input tensor from left to right and top to bottom.
+as starting from the upper-left of the input tensor
+and sliding across it from left to right and top to bottom.
 At each location that the pooling window hits,
 it computes the maximum or average
 value of the input subtensor in the window,
 depending on whether max or average pooling is employed.
 
 
-![Maximum pooling with a pooling window shape of $2\times 2$. The shaded portions are the first output element as well as the input tensor elements used for the output computation: $\max(0, 1, 3, 4)=4$.](../img/pooling.svg)
+![Max-pooling with a pooling window shape of $2\times 2$. The shaded portions are the first output element as well as the input tensor elements used for the output computation: $\max(0, 1, 3, 4)=4$.](../img/pooling.svg)
 :label:`fig_pooling`
 
 The output tensor in :numref:`fig_pooling`  has a height of 2 and a width of 2.
@@ -77,44 +110,27 @@ $$
 \max(4, 5, 7, 8)=8.\\
 $$
 
-A pooling layer with a pooling window shape of $p \times q$
-is called a $p \times q$ pooling layer.
-The pooling operation is called $p \times q$ pooling.
-
-Let us return to the object edge detection example
-mentioned at the beginning of this section.
-Now we will use the output of the convolutional layer
-as the input for $2\times 2$ maximum pooling.
-Set the convolutional layer input as `X` and the pooling layer output as `Y`. Whether or not the values of `X[i, j]` and `X[i, j + 1]` are different,
-or `X[i, j + 1]` and `X[i, j + 2]` are different,
+More generally, we can define a $p \times q$ pooling layer by aggregating over 
+a region of said size. Returning to the problem of edge detection, 
+we use the output of the convolutional layer
+as input for $2\times 2$ max-pooling.
+Denote by `X` the input of the convolutional layer input and `Y` the pooling layer output. 
+Regardless of whether or not the values of `X[i, j]`, `X[i, j + 1]`, 
+`X[i+1, j]` and `X[i+1, j + 1]` are different,
 the pooling layer always outputs `Y[i, j] = 1`.
-That is to say, using the $2\times 2$ maximum pooling layer,
+That is to say, using the $2\times 2$ max-pooling layer,
 we can still detect if the pattern recognized by the convolutional layer
 moves no more than one element in height or width.
 
-In the code below, we implement the forward propagation
-of the pooling layer in the `pool2d` function.
+In the code below, we (**implement the forward propagation
+of the pooling layer**) in the `pool2d` function.
 This function is similar to the `corr2d` function
 in :numref:`sec_conv_layer`.
-However, here we have no kernel, computing the output
+However, no kernel is needed, computing the output
 as either the maximum or the average of each region in the input.
 
 ```{.python .input}
-from d2l import mxnet as d2l
-from mxnet import np, npx
-from mxnet.gluon import nn
-npx.set_np()
-```
-
-```{.python .input}
-#@tab pytorch
-from d2l import torch as d2l
-import torch
-from torch import nn
-```
-
-```{.python .input}
-#@tab mxnet, pytorch
+%%tab mxnet, pytorch
 def pool2d(X, pool_size, mode='max'):
     p_h, p_w = pool_size
     Y = d2l.zeros((X.shape[0] - p_h + 1, X.shape[1] - p_w + 1))
@@ -128,7 +144,21 @@ def pool2d(X, pool_size, mode='max'):
 ```
 
 ```{.python .input}
-#@tab tensorflow
+%%tab jax
+def pool2d(X, pool_size, mode='max'):
+    p_h, p_w = pool_size
+    Y = jnp.zeros((X.shape[0] - p_h + 1, X.shape[1] - p_w + 1))
+    for i in range(Y.shape[0]):
+        for j in range(Y.shape[1]):
+            if mode == 'max':
+                Y = Y.at[i, j].set(X[i: i + p_h, j: j + p_w].max())
+            elif mode == 'avg':
+                Y = Y.at[i, j].set(X[i: i + p_h, j: j + p_w].mean())
+    return Y
+```
+
+```{.python .input}
+%%tab tensorflow
 import tensorflow as tf
 
 def pool2d(X, pool_size, mode='max'):
@@ -143,167 +173,224 @@ def pool2d(X, pool_size, mode='max'):
     return Y
 ```
 
-We can construct the input tensor `X` in :numref:`fig_pooling` to validate the output of the two-dimensional maximum pooling layer.
+We can construct the input tensor `X` in :numref:`fig_pooling` to [**validate the output of the two-dimensional max-pooling layer**].
 
 ```{.python .input}
-#@tab all
+%%tab all
 X = d2l.tensor([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]])
 pool2d(X, (2, 2))
 ```
 
-Also, we experiment with the average pooling layer.
+Also, we can experiment with (**the average pooling layer**).
 
 ```{.python .input}
-#@tab all
+%%tab all
 pool2d(X, (2, 2), 'avg')
 ```
 
-## Padding and Stride
+## [**Padding and Stride**]
 
 As with convolutional layers, pooling layers
-can also change the output shape.
-And as before, we can alter the operation to achieve a desired output shape
+change the output shape.
+And as before, we can adjust the operation to achieve a desired output shape
 by padding the input and adjusting the stride.
 We can demonstrate the use of padding and strides
-in pooling layers via the built-in two-dimensional maximum pooling layer from the deep learning framework.
+in pooling layers via the built-in two-dimensional max-pooling layer from the deep learning framework.
 We first construct an input tensor `X` whose shape has four dimensions,
-where the number of examples and number of channels are both 1.
+where the number of examples (batch size) and number of channels are both 1.
+
+:begin_tab:`tensorflow`
+Note that unlike other frameworks, TensorFlow
+prefers and is optimized for *channels-last* input.
+:end_tab:
 
 ```{.python .input}
-#@tab mxnet, pytorch
+%%tab mxnet, pytorch
 X = d2l.reshape(d2l.arange(16, dtype=d2l.float32), (1, 1, 4, 4))
 X
 ```
 
 ```{.python .input}
-#@tab tensorflow
+%%tab tensorflow, jax
 X = d2l.reshape(d2l.arange(16, dtype=d2l.float32), (1, 4, 4, 1))
 X
 ```
 
-By default, the stride and the pooling window in the instance from the framework's built-in class
-have the same shape.
-Below, we use a pooling window of shape `(3, 3)`,
-so we get a stride shape of `(3, 3)` by default.
+Since pooling aggregates information from an area, (**deep learning frameworks default to matching pooling window sizes and stride.**) For instance, if we use a pooling window of shape `(3, 3)`
+we get a stride shape of `(3, 3)` by default.
 
 ```{.python .input}
+%%tab mxnet
 pool2d = nn.MaxPool2D(3)
-# Because there are no model parameters in the pooling layer, we do not need
-# to call the parameter initialization function
+# Pooling has no model parameters, hence it needs no initialization
 pool2d(X)
 ```
 
 ```{.python .input}
-#@tab pytorch
+%%tab pytorch
 pool2d = nn.MaxPool2d(3)
+# Pooling has no model parameters, hence it needs no initialization
 pool2d(X)
 ```
 
 ```{.python .input}
-#@tab tensorflow
+%%tab tensorflow
 pool2d = tf.keras.layers.MaxPool2D(pool_size=[3, 3])
+# Pooling has no model parameters, hence it needs no initialization
 pool2d(X)
 ```
 
-The stride and padding can be manually specified.
+```{.python .input}
+%%tab jax
+# Pooling has no model parameters, hence it needs no initialization
+nn.max_pool(X, window_shape=(3, 3), strides=(3, 3))
+```
+
+Needless to say, [**the stride and padding can be manually specified**] to override framework defaults if required.
 
 ```{.python .input}
+%%tab mxnet
 pool2d = nn.MaxPool2D(3, padding=1, strides=2)
 pool2d(X)
 ```
 
 ```{.python .input}
-#@tab pytorch
+%%tab pytorch
 pool2d = nn.MaxPool2d(3, padding=1, stride=2)
 pool2d(X)
 ```
 
 ```{.python .input}
-#@tab tensorflow
-pool2d = tf.keras.layers.MaxPool2D(pool_size=[3, 3], padding='same',
+%%tab tensorflow
+paddings = tf.constant([[0, 0], [1,0], [1,0], [0,0]])
+X_padded = tf.pad(X, paddings, "CONSTANT")
+pool2d = tf.keras.layers.MaxPool2D(pool_size=[3, 3], padding='valid',
                                    strides=2)
-pool2d(X)
-```
-
-Of course, we can specify an arbitrary rectangular pooling window
-and specify the padding and stride for height and width, respectively.
-
-```{.python .input}
-pool2d = nn.MaxPool2D((2, 3), padding=(1, 2), strides=(2, 3))
-pool2d(X)
+pool2d(X_padded)
 ```
 
 ```{.python .input}
-#@tab pytorch
-pool2d = nn.MaxPool2d((2, 3), padding=(1, 1), stride=(2, 3))
+%%tab jax
+X_padded = jnp.pad(X, ((0, 0), (1, 0), (1, 0), (0, 0)), mode='constant')
+nn.max_pool(X_padded, window_shape=(3, 3), padding='VALID', strides=(2, 2))
+```
+
+Of course, we can specify an arbitrary rectangular pooling window with arbitrary height and width respectively, as the example below shows.
+
+```{.python .input}
+%%tab mxnet
+pool2d = nn.MaxPool2D((2, 3), padding=(0, 1), strides=(2, 3))
 pool2d(X)
 ```
 
 ```{.python .input}
-#@tab tensorflow
-pool2d = tf.keras.layers.MaxPool2D(pool_size=[2, 3], padding='same',
+%%tab pytorch
+pool2d = nn.MaxPool2d((2, 3), stride=(2, 3), padding=(0, 1))
+pool2d(X)
+```
+
+```{.python .input}
+%%tab tensorflow
+paddings = tf.constant([[0, 0], [0, 0], [1, 1], [0, 0]])
+X_padded = tf.pad(X, paddings, "CONSTANT")
+
+pool2d = tf.keras.layers.MaxPool2D(pool_size=[2, 3], padding='valid',
                                    strides=(2, 3))
-pool2d(X)
+pool2d(X_padded)
+```
+
+```{.python .input}
+%%tab jax
+
+X_padded = jnp.pad(X, ((0, 0), (0, 0), (1, 1), (0, 0)), mode='constant')
+nn.max_pool(X_padded, window_shape=(2, 3), strides=(2, 3), padding='VALID')
 ```
 
 ## Multiple Channels
 
 When processing multi-channel input data,
-the pooling layer pools each input channel separately,
+[**the pooling layer pools each input channel separately**],
 rather than summing the inputs up over channels
 as in a convolutional layer.
 This means that the number of output channels for the pooling layer
 is the same as the number of input channels.
 Below, we will concatenate tensors `X` and `X + 1`
-on the channel dimension to construct an input with 2 channels.
+on the channel dimension to construct an input with two channels.
+
+:begin_tab:`tensorflow`
+Note that this will require a
+concatenation along the last dimension for TensorFlow due to the channels-last syntax.
+:end_tab:
 
 ```{.python .input}
-#@tab mxnet, pytorch
+%%tab mxnet, pytorch
 X = d2l.concat((X, X + 1), 1)
 X
 ```
 
 ```{.python .input}
-#@tab tensorflow
-X = tf.reshape(tf.stack([X, X+1], 0), (1, 2, 4, 4))
+%%tab tensorflow, jax
+# Concatenate along `dim=3` due to channels-last syntax
+X = d2l.concat([X, X + 1], 3)
+X
 ```
 
-As we can see, the number of output channels is still 2 after pooling.
+As we can see, the number of output channels is still two after pooling.
 
 ```{.python .input}
+%%tab mxnet
 pool2d = nn.MaxPool2D(3, padding=1, strides=2)
 pool2d(X)
 ```
 
 ```{.python .input}
-#@tab pytorch
+%%tab pytorch
 pool2d = nn.MaxPool2d(3, padding=1, stride=2)
 pool2d(X)
 ```
 
 ```{.python .input}
-#@tab tensorflow
-pool2d = tf.keras.layers.MaxPool2D(3, padding='same', strides=2)
-pool2d(X)
+%%tab tensorflow
+paddings = tf.constant([[0, 0], [1,0], [1,0], [0,0]])
+X_padded = tf.pad(X, paddings, "CONSTANT")
+pool2d = tf.keras.layers.MaxPool2D(pool_size=[3, 3], padding='valid',
+                                   strides=2)
+pool2d(X_padded)
+
 ```
+
+```{.python .input}
+%%tab jax
+X_padded = jnp.pad(X, ((0, 0), (1, 0), (1, 0), (0, 0)), mode='constant')
+nn.max_pool(X_padded, window_shape=(3, 3), padding='VALID', strides=(2, 2))
+```
+
+:begin_tab:`tensorflow`
+Note that the output for the TensorFlow pooling appears at first glance to be different, however
+numerically the same results are presented as MXNet and PyTorch.
+The difference lies in the dimensionality, and reading the
+output vertically yields the same output as the other implementations.
+:end_tab:
 
 ## Summary
 
-* Taking the input elements in the pooling window, the maximum pooling operation assigns the maximum value as the output and the average pooling operation assigns the average value as the output.
-* One of the major benefits of a pooling layer is to alleviate the excessive sensitivity of the convolutional layer to location.
-* We can specify the padding and stride for the pooling layer.
-* Maximum pooling, combined with a stride larger than 1 can be used to reduce the spatial dimensions (e.g., width and height).
-* The pooling layer's number of output channels is the same as the number of input channels.
+Pooling is an exceedingly simple operation. It does exactly what its name indicates, aggregate results over a window of values. All convolution semantics, such as strides and padding apply in the same way as they did previously. Note that pooling is indifferent to channels, i.e., it leaves the number of channels unchanged and it applies to each channel separately. Lastly, of the two popular pooling choices, max-pooling is preferable to average pooling, as it confers some degree of invariance to output. A popular choice is to pick a pooling window size of $2 \times 2$ to quarter the spatial resolution of output. 
+
+Note that there are many more ways of reducing resolution beyond pooling. For instance, in stochastic pooling :cite:`Zeiler.Fergus.2013` and fractional max-pooling :cite:`Graham.2014` aggregation is combined with randomization. This can slightly improve the accuracy in some cases. Lastly, as we will see later with the attention mechanism, there are more refined ways of aggregating over outputs, e.g., by using the alignment between a query and representation vectors. 
 
 
 ## Exercises
 
-1. Can you implement average pooling as a special case of a convolution layer? If so, do it.
-1. Can you implement max pooling as a special case of a convolution layer? If so, do it.
-1. What is the computational cost of the pooling layer? Assume that the input to the pooling layer is of size $c\times h\times w$, the pooling window has a shape of $p_h\times p_w$ with a padding of $(p_h, p_w)$ and a stride of $(s_h, s_w)$.
-1. Why do you expect maximum pooling and average pooling to work differently?
+1. Implement average pooling through a convolution. 
+1. Prove that max-pooling cannot be implemented through a convolution alone. 
+1. Max-pooling can be accomplished using ReLU operations, i.e., $\textrm{ReLU}(x) = \max(0, x)$.
+    1. Express $\max (a, b)$ by using only ReLU operations.
+    1. Use this to implement max-pooling by means of convolutions and ReLU layers. 
+    1. How many channels and layers do you need for a $2 \times 2$ convolution? How many for a $3 \times 3$ convolution?
+1. What is the computational cost of the pooling layer? Assume that the input to the pooling layer is of size $c\times h\times w$, the pooling window has a shape of $p_\textrm{h}\times p_\textrm{w}$ with a padding of $(p_\textrm{h}, p_\textrm{w})$ and a stride of $(s_\textrm{h}, s_\textrm{w})$.
+1. Why do you expect max-pooling and average pooling to work differently?
 1. Do we need a separate minimum pooling layer? Can you replace it with another operation?
-1. Is there another operation between average and maximum pooling that you could consider (hint: recall the softmax)? Why might it not be so popular?
+1. We could use the softmax operation for pooling. Why might it not be so popular?
 
 :begin_tab:`mxnet`
 [Discussions](https://discuss.d2l.ai/t/71)
@@ -316,3 +403,8 @@ pool2d(X)
 :begin_tab:`tensorflow`
 [Discussions](https://discuss.d2l.ai/t/274)
 :end_tab:
+
+:begin_tab:`jax`
+[Discussions](https://discuss.d2l.ai/t/17999)
+:end_tab:
+

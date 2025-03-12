@@ -2,7 +2,7 @@
 
 ## In General
 
-* Be clear, engaging, pragmatic, and consistent
+* Be precise, clear, engaging, pragmatic, and consistent
 
 ## Text
 
@@ -22,7 +22,7 @@
         * Without accents (``)
     * `backward` function
         * not `backward()` function
-    * for-loop
+    * "for-loop" not "for loop"
 * Terminologies
     * Consistently use
         * function (not method)
@@ -30,15 +30,13 @@
         * weight, bias, label
         * model training, model prediction (model inference)
         * training/testing/validation dataset
-        * data point (preferred)/data instance/training example/testing example/example of the dataset
+        * prefer using "data/training/testing example" over "data instance" or "data point"
     * Distinguish：
         * hyperparameter vs parameter
         * minibatch stochastic gradient descent vs stochastic gradient descent
-    * List
-        * https://github.com/mli/gluon-tutorials-zh/blob/master/TERMINOLOGY.md
 * Use numerals when they are explaining or part of code or math.
 * Acceptable abbreviations
-    * MLP, CNN, RNN, GRU, LSTM, model names (e.g., ELMo, GPT, BERT)
+    * AI, MLP, CNN, RNN, GRU, LSTM, model names (e.g., ELMo, GPT, BERT)
     * We spell out full names in most cases to be clear (e.g., NLP -> natural language processing)
 
 ## Math
@@ -49,6 +47,7 @@
 * Assignment symbol
     * \leftarrow
 * Use mathematical numerals only when they are part of math: "$x$ is either $1$ or $-1$", "the greatest common divisor of $12$ and $18$ is $6$".
+* We do not use "thousands separator" (since different publishing houses have different styles). E.g., 10,000 should be written as 10000 in the source markdown files.
 
 ## Figure
 
@@ -75,11 +74,11 @@
             * Light：B2D9FF
             * (Try to avoid) Extra Light: CFF4FF
 * Be careful about copyright
-* matplotlib
+
 
 ## Code
 
-* Each line must have <=78 characters (limited by page width)
+* Each line must have <=78 characters (limited by page width). For [the cambridge style](https://github.com/d2l-ai/d2l-en/pull/2187), each line must have <=79 characters.
 * Python
     * PEP8
         * e.g., (https://www.python.org/dev/peps/pep-0008/#should-a-line-break-before-or-after-a-binary-operator)
@@ -113,10 +112,6 @@
     * For clarity, surround variable names with accents, e.g.,  # shape of `X`
 * imports
     * import alphabetically
-    * `from mxnet.gluon import data as gdata, loss as gloss, nn, utils as gutils`
-* Print outputs
-    * `epoch, lr, loss, train acc, time`
-    * Around 5 lines
 * Print variables
     * if possible use `x, y` instead of `print('x:', x, 'y:', y)` at the end of the code block
 * String
@@ -124,11 +119,8 @@
     * Use f-strings. To break a long f-string into multi-lines, just use one f-string per line.
 * Other items
     * `nd.f(x)` → `x.nd`
-    * `random_normal` → `random.normal`
-    * multiple imports
     * `.1` → `1.0`
     * 1. → `1.0`
-    * remove namescope
 
 
 ## References
@@ -136,10 +128,14 @@
 * Refer to [d2lbook](https://book.d2l.ai/user/markdown.html#cross-references) on how to add references for figure, table and equations.
 
 
-## QR Code
+## URL
 
-* https://www.the-qrcode-generator.com/
-    * 75pixel, SVG
+When setting `style = cambridge`, URLs will be converted into QR code, which requires replacing special characters with [URL encoding](https://www.urlencoder.io/learn/). For example:
+
+`Stanford's [large movie review dataset](https://ai.stanford.edu/~amaas/data/sentiment/)`
+->
+`Stanford's [large movie review dataset](https://ai.stanford.edu/%7Eamaas/data/sentiment/)`
+
 
 ## Citations
 

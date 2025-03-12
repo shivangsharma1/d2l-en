@@ -18,7 +18,7 @@ Where $\Theta$ represents the parameters of an arbitrary recommendation model, $
 
 $$
 \begin{aligned}
-\text{BPR-OPT} : &= \ln p(\Theta \mid >_u) \\
+\textrm{BPR-OPT} : &= \ln p(\Theta \mid >_u) \\
          & \propto \ln p(>_u \mid \Theta) p(\Theta) \\
          &= \ln \prod_{(u, i, j \in D)} \sigma(\hat{y}_{ui} - \hat{y}_{uj}) p(\Theta) \\
          &= \sum_{(u, i, j \in D)} \ln \sigma(\hat{y}_{ui} - \hat{y}_{uj}) + \ln p(\Theta) \\
@@ -27,12 +27,13 @@ $$
 $$
 
 
-where $D := \{(u, i, j) \mid i \in I^+_u \wedge j \in I \backslash I^+_u \}$ is the training set, with $I^+_u$ denoting the items the user $u$ liked, $I$ denoting all items, and $I \backslash I^+_u$ indicating all other items excluding items the user liked. $\hat{y}_{ui}$ and $\hat{y}_{uj}$ are the predicted scores of the user $u$ to item $i$ and $j$, respectively. The prior $p(\Theta)$ is a normal distribution with zero mean and variance-covariance matrix $\Sigma_\Theta$. Here, we let $\Sigma_\Theta = \lambda_\Theta I$.
+where $D \stackrel{\textrm{def}}{=} \{(u, i, j) \mid i \in I^+_u \wedge j \in I \backslash I^+_u \}$ is the training set, with $I^+_u$ denoting the items the user $u$ liked, $I$ denoting all items, and $I \backslash I^+_u$ indicating all other items excluding items the user liked. $\hat{y}_{ui}$ and $\hat{y}_{uj}$ are the predicted scores of the user $u$ to item $i$ and $j$, respectively. The prior $p(\Theta)$ is a normal distribution with zero mean and variance-covariance matrix $\Sigma_\Theta$. Here, we let $\Sigma_\Theta = \lambda_\Theta I$.
 
 ![Illustration of Bayesian Personalized Ranking](../img/rec-ranking.svg)
 We will implement the base class  `mxnet.gluon.loss.Loss` and override the `forward` method to construct the Bayesian personalized ranking loss. We begin by importing the Loss class and the np module.
 
 ```{.python .input  n=5}
+#@tab mxnet
 from mxnet import gluon, np, npx
 npx.set_np()
 ```
@@ -40,6 +41,7 @@ npx.set_np()
 The implementation of BPR loss is as follows.
 
 ```{.python .input  n=2}
+#@tab mxnet
 #@save
 class BPRLoss(gluon.loss.Loss):
     def __init__(self, weight=None, batch_axis=0, **kwargs):
@@ -62,6 +64,7 @@ $$
 where $m$ is the safety margin size. It aims to push negative items away from positive items. Similar to BPR, it aims to optimize for relevant distance between positive and negative samples instead of absolute outputs, making it well suited to recommender systems.
 
 ```{.python .input  n=3}
+#@tab mxnet
 #@save
 class HingeLossbRec(gluon.loss.Loss):
     def __init__(self, weight=None, batch_axis=0, **kwargs):

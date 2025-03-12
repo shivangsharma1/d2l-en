@@ -1,14 +1,15 @@
 # Integral Calculus
 :label:`sec_integral_calculus`
 
-Differentiation only makes up half of the content of a traditional calculus education.  The other pillar, integration, starts out seeming a rather disjoint question, "What is the area underneath this curve?"  While seemingly unrelated, integration is tightly intertwined with the differentiation via what is known as the *fundamental theorem of calculus*.  
+Differentiation only makes up half of the content of a traditional calculus education.  The other pillar, integration, starts out seeming a rather disjoint question, "What is the area underneath this curve?"  While seemingly unrelated, integration is tightly intertwined with the differentiation via what is known as the *fundamental theorem of calculus*.
 
 At the level of machine learning we discuss in this book, we will not need a deep understanding of integration. However, we will provide a brief introduction to lay the groundwork for any further applications we will encounter later on.
 
 ## Geometric Interpretation
-Suppose that we have a function $f(x)$.  For simplicity, let us assume that $f(x)$ is non-negative (never takes a value less than zero).  What we want to try and understand is: what is the area contained between $f(x)$ and the $x$-axis?
+Suppose that we have a function $f(x)$.  For simplicity, let's assume that $f(x)$ is non-negative (never takes a value less than zero).  What we want to try and understand is: what is the area contained between $f(x)$ and the $x$-axis?
 
 ```{.python .input}
+#@tab mxnet
 %matplotlib inline
 from d2l import mxnet as d2l
 from IPython import display
@@ -62,6 +63,7 @@ d2l.plt.show()
 In most cases, this area will be infinite or undefined (consider the area under $f(x) = x^{2}$), so people will often talk about the area between a pair of ends, say $a$ and $b$.
 
 ```{.python .input}
+#@tab mxnet
 x = np.arange(-2, 2, 0.01)
 f = np.exp(-x**2)
 
@@ -96,7 +98,7 @@ d2l.plt.show()
 We will denote this area by the integral symbol below:
 
 $$
-\mathrm{Area}(\mathcal{A}) = \int_a^b f(x) \;dx.
+\textrm{Area}(\mathcal{A}) = \int_a^b f(x) \;dx.
 $$
 
 The inner variable is a dummy variable, much like the index of a sum in a $\sum$, and so this can be equivalently written with any inner value we like:
@@ -105,9 +107,10 @@ $$
 \int_a^b f(x) \;dx = \int_a^b f(z) \;dz.
 $$
 
-There is a traditional way to try and understand how we might try to approximate such integrals: we can imagine taking the region in-between $a$ and $b$ and chopping it into $N$ vertical slices.  If $N$ is large, we can approximate the area of each slice by a rectangle, and then add up the areas to get the total area under the curve.  Let us take a look at an example doing this in code.  We will see how to get the true value in a later section.
+There is a traditional way to try and understand how we might try to approximate such integrals: we can imagine taking the region in-between $a$ and $b$ and chopping it into $N$ vertical slices.  If $N$ is large, we can approximate the area of each slice by a rectangle, and then add up the areas to get the total area under the curve.  Let's take a look at an example doing this in code.  We will see how to get the true value in a later section.
 
 ```{.python .input}
+#@tab mxnet
 epsilon = 0.05
 a = 0
 b = 2
@@ -187,7 +190,7 @@ We will instead take a different approach.  We will work intuitively with the no
 
 ## The Fundamental Theorem of Calculus
 
-To dive deeper into the theory of integration, let us introduce a function 
+To dive deeper into the theory of integration, let's introduce a function
 
 $$
 F(x) = \int_0^x f(y) dy.
@@ -201,12 +204,12 @@ $$
 
 This is a mathematical encoding of the fact that we can measure the area out to the far end-point and then subtract off the area to the near end point as indicated in :numref:`fig_area-subtract`.
 
-![Visualizing why we may reduce the problem of computing the area under a curve between two points to computing the area to the left of a point.](../img/SubArea.svg)
+![Visualizing why we may reduce the problem of computing the area under a curve between two points to computing the area to the left of a point.](../img/sub-area.svg)
 :label:`fig_area-subtract`
 
-Thus, we can figure out what the integral over any interval is by figuring out what $F(x)$ is.  
+Thus, we can figure out what the integral over any interval is by figuring out what $F(x)$ is.
 
-To do so, let us consider an experiment.  As we often do in calculus, let us imagine what happens when we shift the value by a tiny bit.  From the comment above, we know that
+To do so, let's consider an experiment.  As we often do in calculus, let's imagine what happens when we shift the value by a tiny bit.  From the comment above, we know that
 
 $$
 F(x+\epsilon) - F(x) = \int_x^{x+\epsilon} f(y) \; dy.
@@ -227,7 +230,7 @@ $$
 $$
 
 This is the *fundamental theorem of calculus*.  We may write it in expanded form as
-$$\frac{d}{dx}\int_{-\infty}^x f(y) \; dy = f(x).$$
+$$\frac{d}{dx}\int_0^x  f(y) \; dy = f(x).$$
 :eqlabel:`eq_ftc`
 
 It takes the concept of finding areas (*a priori* rather hard), and reduces it to a statement derivatives (something much more completely understood).  One last comment that we must make is that this does not tell us exactly what $F(x)$ is.  Indeed $F(x) + C$ for any $C$ has the same derivative.  This is a fact-of-life in the theory of integration.  Thankfully, notice that when working with definite integrals, the constants drop out, and thus are irrelevant to the outcome.
@@ -236,7 +239,7 @@ $$
 \int_a^b f(x) \; dx = (F(b) + C) - (F(a) + C) = F(b) - F(a).
 $$
 
-This may seem like abstract non-sense, but let us take a moment to appreciate that it has given us a whole new perspective on computing integrals.  Our goal is no-longer to do some sort of chop-and-sum process to try and recover the area, rather we need only find a function whose derivative is the function we have!  This is incredible since we can now list many rather difficult integrals by just reversing the table from :numref:`sec_derivative_table`.  For instance, we know that the derivative of $x^{n}$ is $nx^{n-1}$.  Thus, we can say using the fundamental theorem :eqref:`eq_ftc` that
+This may seem like abstract non-sense, but let's take a moment to appreciate that it has given us a whole new perspective on computing integrals.  Our goal is no-longer to do some sort of chop-and-sum process to try and recover the area, rather we need only find a function whose derivative is the function we have!  This is incredible since we can now list many rather difficult integrals by just reversing the table from :numref:`sec_derivative_table`.  For instance, we know that the derivative of $x^{n}$ is $nx^{n-1}$.  Thus, we can say using the fundamental theorem :eqref:`eq_ftc` that
 
 $$
 \int_0^{x} ny^{n-1} \; dy = x^n - 0^n = x^n.
@@ -251,7 +254,7 @@ $$
 In this way, we can develop the entire theory of integration leveraging ideas from differential calculus freely.  Every integration rule derives from this one fact.
 
 ## Change of Variables
-:label:`integral_example`
+:label:`subsec_integral_example`
 
 Just as with differentiation, there are a number of rules which make the computation of integrals more tractable.  In fact, every rule of differential calculus (like the product rule, sum rule, and chain rule) has a corresponding rule for integral calculus (integration by parts, linearity of integration, and the change of variables formula respectively).  In this section, we will dive into what is arguably the most important from the list: the change of variables formula.
 
@@ -259,9 +262,9 @@ First, suppose that we have a function which is itself an integral:
 
 $$
 F(x) = \int_0^x f(y) \; dy.
-$$ 
+$$
 
-Let us suppose that we want to know how this function looks when we compose it with another to obtain $F(u(x))$.  By the chain rule, we know
+Let's suppose that we want to know how this function looks when we compose it with another to obtain $F(u(x))$.  By the chain rule, we know
 
 $$
 \frac{d}{dx}F(u(x)) = \frac{dF}{du}(u(x))\cdot \frac{du}{dx}.
@@ -286,16 +289,16 @@ $$\int_{u(0)}^{u(x)} f(y) \; dy = \int_0^x f(u(y))\cdot \frac{du}{dy} \;dy.$$
 
 This is the *change of variables* formula.
 
-For a more intuitive derivation, consider what happens when we take an integral of $f(u(x))$ between $x$ and $x+\epsilon$. For a small $\epsilon$, this integral is approximately $\epsilon f(u(x))$, the area of the associated rectangle.  Now, let us compare this with the integral of $f(y)$ from $u(x)$ to $u(x+\epsilon)$.  We know that $u(x+\epsilon) \approx u(x) + \epsilon \frac{du}{dx}(x)$, so the area of this rectangle is approximately $\epsilon \frac{du}{dx}(x)f(u(x))$.  Thus, to make the area of these two rectangles to agree, we need to multiply the first one by $\frac{du}{dx}(x)$ as is illustrated in :numref:`fig_rect-transform`.  
+For a more intuitive derivation, consider what happens when we take an integral of $f(u(x))$ between $x$ and $x+\epsilon$. For a small $\epsilon$, this integral is approximately $\epsilon f(u(x))$, the area of the associated rectangle.  Now, let's compare this with the integral of $f(y)$ from $u(x)$ to $u(x+\epsilon)$.  We know that $u(x+\epsilon) \approx u(x) + \epsilon \frac{du}{dx}(x)$, so the area of this rectangle is approximately $\epsilon \frac{du}{dx}(x)f(u(x))$.  Thus, to make the area of these two rectangles to agree, we need to multiply the first one by $\frac{du}{dx}(x)$ as is illustrated in :numref:`fig_rect-transform`.
 
-![Visualizing the transformation of a single thin rectangle under the change of variables.](../img/RectTrans.svg)
+![Visualizing the transformation of a single thin rectangle under the change of variables.](../img/rect-trans.svg)
 :label:`fig_rect-transform`
 
 This tells us that
 
 $$
 \int_x^{x+\epsilon} f(u(y))\frac{du}{dy}(y)\;dy = \int_{u(x)}^{u(x+\epsilon)} f(y) \; dy.
-$$  
+$$
 
 This is the change of variables formula expressed for a single small rectangle.
 
@@ -345,6 +348,7 @@ If this discussion sounds familiar, it is!  In :numref:`sec_geometry-linear-alge
 In some cases, we will need to work in higher dimensions.  For instance, suppose that we have a function of two variables, like $f(x, y)$ and we want to know the volume under $f$ when $x$ ranges over $[a, b]$ and $y$ ranges over $[c, d]$.
 
 ```{.python .input}
+#@tab mxnet
 # Construct grid and compute function
 x, y = np.meshgrid(np.linspace(-2, 2, 101), np.linspace(-2, 2, 101),
                    indexing='ij')
@@ -352,7 +356,7 @@ z = np.exp(- x**2 - y**2)
 
 # Plot function
 ax = d2l.plt.figure().add_subplot(111, projection='3d')
-ax.plot_wireframe(x, y, z)
+ax.plot_wireframe(x.asnumpy(), y.asnumpy(), z.asnumpy())
 d2l.plt.xlabel('x')
 d2l.plt.ylabel('y')
 d2l.plt.xticks([-2, -1, 0, 1, 2])
@@ -404,7 +408,7 @@ ax.set_zlim(0, 1)
 ax.dist = 12
 ```
 
-We write this as 
+We write this as
 
 $$
 \int_{[a, b]\times[c, d]} f(x, y)\;dx\;dy.
@@ -416,7 +420,7 @@ $$
 \int_{[a, b]\times[c, d]} f(x, y)\;dx\;dy = \int_c^{d} \left(\int_a^{b} f(x, y) \;dx\right) \; dy.
 $$
 
-Let us see why this is.  
+Let's see why this is.
 
 Consider the figure above where we have split the function into $\epsilon \times \epsilon$ squares which we will index with integer coordinates $i, j$.  In this case, our integral is approximately
 
@@ -430,16 +434,16 @@ $$
  \sum _ {j} \epsilon \left(\sum_{i} \epsilon f(\epsilon i, \epsilon j)\right).
 $$
 
-![Illustrating how to decompose a sum over many squares as a sum over first the columns (1), then adding the column sums together (2).](../img/SumOrder.svg)
+![Illustrating how to decompose a sum over many squares as a sum over first the columns (1), then adding the column sums together (2).](../img/sum-order.svg)
 :label:`fig_sum-order`
 
-The sum on the inside is precisely the discretization of the integral 
+The sum on the inside is precisely the discretization of the integral
 
 $$
 G(\epsilon j) = \int _a^{b} f(x, \epsilon j) \; dx.
 $$
 
-Finally, notice that if we combine these two expressions we get 
+Finally, notice that if we combine these two expressions we get
 
 $$
 \sum _ {j} \epsilon G(\epsilon j) \approx \int _ {c}^{d} G(y) \; dy = \int _ {[a, b]\times[c, d]} f(x, y)\;dx\;dy.
@@ -466,9 +470,9 @@ $$
 $$
 
 ## Change of Variables in Multiple Integrals
-As with single variables in :eqref:`eq_change_var`, the ability to change variables inside a higher dimensional integral is a key tool.  Let us summarize the result without derivation.  
+As with single variables in :eqref:`eq_change_var`, the ability to change variables inside a higher dimensional integral is a key tool.  Let's summarize the result without derivation.
 
-We need a function that reparameterizes our domain of integration.  We can take this to be $\phi : \mathbb{R}^n \rightarrow \mathbb{R}^n$, that is any function which takes in $n$ real variables and returns another $n$.  To keep the expressions clean, we will assume that $\phi$ is *injective* which is to say it never folds over itself ($\phi(\mathbf{x}) = \phi(\mathbf{y}) \implies \mathbf{x} = \mathbf{y}$).  
+We need a function that reparametrizes our domain of integration.  We can take this to be $\phi : \mathbb{R}^n \rightarrow \mathbb{R}^n$, that is any function which takes in $n$ real variables and returns another $n$.  To keep the expressions clean, we will assume that $\phi$ is *injective* which is to say it never folds over itself ($\phi(\mathbf{x}) = \phi(\mathbf{y}) \implies \mathbf{x} = \mathbf{y}$).
 
 In this case, we can say that
 
@@ -486,11 +490,11 @@ D\boldsymbol{\phi} = \begin{bmatrix}
 \end{bmatrix}.
 $$
 
-Looking closely, we see that this is similar to the single variable chain rule :eqref:`eq_change_var`, except we have replaced the term $\frac{du}{dx}(x)$ with $\left|\det(D\phi(\mathbf{x}))\right|$.  Let us see how we can to interpret this term.  Recall that the $\frac{du}{dx}(x)$ term existed to say how much we stretched our $x$-axis by applying $u$.  The same process in higher dimensions is to determine how much we stretch the area (or volume, or hyper-volume) of a little square (or little *hyper-cube*) by applying $\boldsymbol{\phi}$.  If $\boldsymbol{\phi}$ was the multiplication by a matrix, then we know how the determinant already gives the answer.  
+Looking closely, we see that this is similar to the single variable chain rule :eqref:`eq_change_var`, except we have replaced the term $\frac{du}{dx}(x)$ with $\left|\det(D\phi(\mathbf{x}))\right|$.  Let's see how we can to interpret this term.  Recall that the $\frac{du}{dx}(x)$ term existed to say how much we stretched our $x$-axis by applying $u$.  The same process in higher dimensions is to determine how much we stretch the area (or volume, or hyper-volume) of a little square (or little *hyper-cube*) by applying $\boldsymbol{\phi}$.  If $\boldsymbol{\phi}$ was the multiplication by a matrix, then we know how the determinant already gives the answer.
 
 With some work, one can show that the *Jacobian* provides the best approximation to a multivariable function $\boldsymbol{\phi}$ at a point by a matrix in the same way we could approximate by lines or planes with derivatives and gradients. Thus the determinant of the Jacobian exactly mirrors the scaling factor we identified in one dimension.
 
-It takes some work to fill in the details to this, so do not worry if they are not clear now.  Let us see at least one example we will make use of later on.  Consider the integral
+It takes some work to fill in the details to this, so do not worry if they are not clear now.  Let's see at least one example we will make use of later on.  Consider the integral
 
 $$
 \int _ {-\infty}^{\infty} \int _ {-\infty}^{\infty} e^{-x^{2}-y^{2}} \;dx\;dy.
@@ -502,7 +506,7 @@ $$
 \int _ 0^\infty \int_0 ^ {2\pi} e^{-r^{2}} \left|\det(D\mathbf{\phi}(\mathbf{x}))\right|\;d\theta\;dr,
 $$
 
-where 
+where
 
 $$
 \left|\det(D\mathbf{\phi}(\mathbf{x}))\right| = \left|\det\begin{bmatrix}
@@ -517,7 +521,7 @@ $$
 \int _ 0^\infty \int _ 0 ^ {2\pi} re^{-r^{2}} \;d\theta\;dr = 2\pi\int _ 0^\infty re^{-r^{2}} \;dr = \pi,
 $$
 
-where the final equality follows by the same computation that we used in section :numref:`integral_example`.  
+where the final equality follows by the same computation that we used in section :numref:`subsec_integral_example`.
 
 We will meet this integral again when we study continuous random variables in :numref:`sec_random_variables`.
 
@@ -535,4 +539,13 @@ We will meet this integral again when we study continuous random variables in :n
 
 :begin_tab:`mxnet`
 [Discussions](https://discuss.d2l.ai/t/414)
+:end_tab:
+
+:begin_tab:`pytorch`
+[Discussions](https://discuss.d2l.ai/t/1092)
+:end_tab:
+
+
+:begin_tab:`tensorflow`
+[Discussions](https://discuss.d2l.ai/t/1093)
 :end_tab:

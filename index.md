@@ -22,21 +22,25 @@ chapter_notation/index
 
 chapter_introduction/index
 chapter_preliminaries/index
-chapter_linear-networks/index
+chapter_linear-regression/index
+chapter_linear-classification/index
 chapter_multilayer-perceptrons/index
-chapter_deep-learning-computation/index
+chapter_builders-guide/index
 chapter_convolutional-neural-networks/index
 chapter_convolutional-modern/index
 chapter_recurrent-neural-networks/index
 chapter_recurrent-modern/index
-chapter_attention-mechanisms/index
+chapter_attention-mechanisms-and-transformers/index
 chapter_optimization/index
 chapter_computational-performance/index
 chapter_computer-vision/index
 chapter_natural-language-processing-pretraining/index
 chapter_natural-language-processing-applications/index
-chapter_recommender-systems/index
+chapter_reinforcement-learning/index
+chapter_gaussian-processes/index
+chapter_hyperparameter-optimization/index
 chapter_generative-adversarial-networks/index
+chapter_recommender-systems/index
 chapter_appendix-mathematics-for-deep-learning/index
 chapter_appendix-tools-for-deep-learning/index
 

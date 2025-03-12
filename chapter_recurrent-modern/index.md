@@ -1,33 +1,73 @@
 # Modern Recurrent Neural Networks
 :label:`chap_modern_rnn`
 
-Although we have learned the basics of recurrent neural networks,
-they are not sufficient for a practitioner to solve today's sequence learning problems.
-For instance, given the numerical unstability during gradient calculation,
-gated recurrent neural networks are much more common in practice.
-We will begin by introducing two of such widely-used networks,
-namely gated recurrent units (GRUs) and long short term memory (LSTM),
-with illustrations using the same language modeling problem as introduced in :numref:`chap_rnn`.
+The previous chapter introduced the key ideas 
+behind recurrent neural networks (RNNs). 
+However, just as with convolutional neural networks,
+there has been a tremendous amount of innovation
+in RNN architectures, culminating in several complex
+designs that have proven successful in practice. 
+In particular, the most popular designs 
+feature mechanisms for mitigating the notorious
+numerical instability faced by RNNs,
+as typified by vanishing and exploding gradients.
+Recall that in :numref:`chap_rnn` we dealt 
+with exploding gradients by applying a blunt
+gradient clipping heuristic. 
+Despite the efficacy of this hack,
+it leaves open the problem of vanishing gradients. 
 
-Furthermore, we will modify recurrent neural networks
-with a single undirectional hidden layer.
-We will describe deep architectures,
-and discuss the bidirectional design with both forward and backward recursion.
-They are frequently adopted in modern recurrent networks.
+In this chapter, we introduce the key ideas behind 
+the most successful RNN architectures for sequences,
+which stem from two papers.
+The first, *Long Short-Term Memory* :cite:`Hochreiter.Schmidhuber.1997`,
+introduces the *memory cell*, a unit of computation that replaces 
+traditional nodes in the hidden layer of a network.
+With these memory cells, networks are able 
+to overcome difficulties with training 
+encountered by earlier recurrent networks.
+Intuitively, the memory cell avoids 
+the vanishing gradient problem
+by keeping values in each memory cell's internal state
+cascading along a recurrent edge with weight 1 
+across many successive time steps. 
+A set of multiplicative gates help the network
+to determine not only the inputs to allow 
+into the memory state, 
+but when the content of the memory state 
+should influence the model's output. 
+
+The second paper, *Bidirectional Recurrent Neural Networks* :cite:`Schuster.Paliwal.1997`,
+introduces an architecture in which information 
+from both the future (subsequent time steps) 
+and the past (preceding time steps)
+are used to determine the output 
+at any point in the sequence.
+This is in contrast to previous networks, 
+in which only past input can affect the output.
+Bidirectional RNNs have become a mainstay 
+for sequence labeling tasks in natural language processing,
+among a myriad of other tasks. 
+Fortunately, the two innovations are not mutually exclusive, 
+and have been successfully combined for phoneme classification
+:cite:`Graves.Schmidhuber.2005` and handwriting recognition :cite:`graves2008novel`.
 
 
-In fact, a large portion of sequence learning problems
-such as automatic speech recognition, text to speech, and machine translation,
-consider both inputs and outputs to be sequences of arbitrary length.
-Finally, we will take machine translation as an example,
-and introduce the encoder-decoder architecture based on
-recurrent neural networks and modern practices for such sequence to sequence learning problems.
+The first sections in this chapter will explain the LSTM architecture,
+a lighter-weight version called the gated recurrent unit (GRU),
+the key ideas behind bidirectional RNNs 
+and a brief explanation of how RNN layers 
+are stacked together to form deep RNNs. 
+Subsequently, we will explore the application of RNNs
+in sequence-to-sequence tasks, 
+introducing machine translation
+along with key ideas such as *encoder--decoder* architectures and *beam search*.
 
 ```toc
 :maxdepth: 2
 
-gru
 lstm
+gru
 deep-rnn
 bi-rnn
 machine-translation-and-dataset
